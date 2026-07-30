@@ -15,8 +15,10 @@ type CertInfo struct {
 }
 
 // tlsReadCert dials host:port over TLS and returns the leaf certificate's
-// expiry, CN, and DNS SANs. This works for any HTTPS management interface —
-// the server cert is exposed in the TLS handshake without needing device credentials.
+// expiry, CN, and DNS SANs. Verification is always skipped — the purpose is
+// to inspect whatever cert the device is presenting, including self-signed,
+// expired, or certs without IP SANs. The skipVerify parameter is accepted for
+// API compatibility but no longer controls this dial.
 func tlsReadCert(host string, port int, skipVerify bool) (CertInfo, error) {
 	addr := fmt.Sprintf("%s:%d", host, port)
 	conn, err := tls.DialWithDialer(
@@ -24,7 +26,7 @@ func tlsReadCert(host string, port int, skipVerify bool) (CertInfo, error) {
 		"tcp",
 		addr,
 		&tls.Config{
-			InsecureSkipVerify: skipVerify, //nolint:gosec
+			InsecureSkipVerify: true, //nolint:gosec — read-only cert inspection, not auth
 			ServerName:         host,
 		},
 	)
