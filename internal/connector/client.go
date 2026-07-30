@@ -72,12 +72,13 @@ func (c *Client) MarkDone(jobID string) error {
 	return c.post("/api/v1/connector/jobs/"+jobID+"/done", nil, nil)
 }
 
-// ReportCert tells CertForge the current certificate expiry on a device.
-// CertForge uses this to populate cert_not_after and next_expected_at without
-// needing a full renewal cycle to have completed first.
-func (c *Client) ReportCert(deviceID string, notAfter time.Time) error {
-	body, _ := json.Marshal(map[string]string{
-		"not_after": notAfter.UTC().Format(time.RFC3339),
+// ReportCert tells CertForge the current certificate expiry, CN, and SANs from
+// a device's live TLS cert. CertForge uses this for baseline visibility and DTP matching.
+func (c *Client) ReportCert(deviceID string, info CertInfo) error {
+	body, _ := json.Marshal(map[string]any{
+		"not_after": info.NotAfter.UTC().Format(time.RFC3339),
+		"cn":        info.CN,
+		"sans":      info.SANs,
 	})
 	return c.post("/api/v1/connector/devices/"+deviceID+"/cert", body, nil)
 }

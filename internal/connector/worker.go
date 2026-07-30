@@ -53,25 +53,27 @@ func (w *Worker) Run(ctx context.Context) {
 }
 
 // reportCurrentCerts reads the live TLS certificate from each configured device
-// and reports its expiry to CertForge. This gives CertForge visibility into
-// certs that were not issued through the connector (e.g. pre-existing certs).
+// and reports its expiry, CN, and SANs to CertForge for baseline visibility and DTP matching.
 func (w *Worker) reportCurrentCerts(ctx context.Context) {
 	for _, d := range w.cfg.Devices {
-		port := d.Port
-		if port == 0 {
-			port = 443
-		}
-		notAfter, err := tlsReadCert(d.Host, port, d.SkipVerify)
-		if err != nil {
-			log.Printf("[connector] cert-read %s (%s:%d): %v", d.ID, d.Host, port, err)
-			continue
-		}
-		if err := w.client.ReportCert(d.ID, notAfter); err != nil {
-			log.Printf("[connector] cert-report %s: %v", d.ID, err)
-			continue
-		}
-		log.Printf("[connector] cert-report %s: not_after=%s", d.ID, notAfter.Format("2006-01-02"))
+		w.reportOneCert(d.ID, d.Host, d.Port, d.SkipVerify)
 	}
+}
+
+func (w *Worker) reportOneCert(deviceID, host string, port int, skipVerify bool) {
+	if port == 0 {
+		port = 443
+	}
+	info, err := tlsReadCert(host, port, skipVerify)
+	if err != nil {
+		log.Printf("[connector] cert-read %s (%s:%d): %v", deviceID, host, port, err)
+		return
+	}
+	if err := w.client.ReportCert(deviceID, info); err != nil {
+		log.Printf("[connector] cert-report %s: %v", deviceID, err)
+		return
+	}
+	log.Printf("[connector] cert-report %s: cn=%q not_after=%s", deviceID, info.CN, info.NotAfter.Format("2006-01-02"))
 }
 
 func (w *Worker) poll(ctx context.Context) {
@@ -91,6 +93,16 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 	devCfg := w.cfg.DeviceByID(j.DeviceID)
 	if devCfg == nil {
 		return fmt.Errorf("device %s not in connector.yaml — add it under devices:", j.DeviceID)
+	}
+
+	// Cert-query jobs: read the live cert and report it back; no CSR/install needed.
+	if j.Status == "pending_query" {
+		log.Printf("[connector] job %s: querying cert on %s (%s:%d)", j.ID, j.DeviceName, devCfg.Host, devCfg.Port)
+		w.reportOneCert(j.DeviceID, devCfg.Host, devCfg.Port, devCfg.SkipVerify)
+		if err := w.client.MarkDone(j.ID); err != nil {
+			log.Printf("[connector] job %s: mark done failed: %v", j.ID, err)
+		}
+		return nil
 	}
 
 	// Job credentials from CertForge take precedence; yaml credentials are the fallback.

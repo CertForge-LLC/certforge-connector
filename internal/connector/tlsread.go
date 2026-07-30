@@ -7,10 +7,17 @@ import (
 	"time"
 )
 
+// CertInfo holds the key fields read from a device's live TLS certificate.
+type CertInfo struct {
+	NotAfter time.Time
+	CN       string
+	SANs     []string
+}
+
 // tlsReadCert dials host:port over TLS and returns the leaf certificate's
-// NotAfter timestamp. This works for any HTTPS management interface — the
-// server cert is exposed in the TLS handshake without needing device credentials.
-func tlsReadCert(host string, port int, skipVerify bool) (time.Time, error) {
+// expiry, CN, and DNS SANs. This works for any HTTPS management interface —
+// the server cert is exposed in the TLS handshake without needing device credentials.
+func tlsReadCert(host string, port int, skipVerify bool) (CertInfo, error) {
 	addr := fmt.Sprintf("%s:%d", host, port)
 	conn, err := tls.DialWithDialer(
 		&net.Dialer{Timeout: 10 * time.Second},
@@ -22,13 +29,18 @@ func tlsReadCert(host string, port int, skipVerify bool) (time.Time, error) {
 		},
 	)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("tls dial %s: %w", addr, err)
+		return CertInfo{}, fmt.Errorf("tls dial %s: %w", addr, err)
 	}
 	defer conn.Close()
 
 	certs := conn.ConnectionState().PeerCertificates
 	if len(certs) == 0 {
-		return time.Time{}, fmt.Errorf("tls dial %s: no certificates in handshake", addr)
+		return CertInfo{}, fmt.Errorf("tls dial %s: no certificates in handshake", addr)
 	}
-	return certs[0].NotAfter, nil
+	leaf := certs[0]
+	return CertInfo{
+		NotAfter: leaf.NotAfter,
+		CN:       leaf.Subject.CommonName,
+		SANs:     leaf.DNSNames,
+	}, nil
 }
