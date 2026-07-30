@@ -1,12 +1,16 @@
 # CertForge connector configuration
 # Copy this file to connector.yaml and fill in your values.
-# Environment variables are expanded (e.g. $CERTFORGE_API_KEY).
+#
+# SECRETS: Do not put passwords or API keys directly in this file.
+# Reference environment variables instead — the connector expands them at startup.
+# Example (systemd): set Environment= in your unit override, or use an EnvironmentFile=.
+# Example (Docker):  pass -e CERTFORGE_API_KEY=... or use an env_file in compose.
 
 # URL of your CertForge instance.
 certforge_url: https://app.certgovernance.app
 
-# API key from CertForge → Settings → API Keys.
-# Use a key scoped to the "connector" role.
+# Connector token from CertForge → Settings → API Keys → Connector Tokens.
+# Always load from an environment variable — never paste the token directly here.
 api_key: $CERTFORGE_API_KEY
 
 # How often to poll CertForge for pending jobs (default 30s).
@@ -20,6 +24,6 @@ devices:
     host: 192.168.1.100      # management IP — must be reachable from this host
     port: 443                # default 443
     username: Admin
-    password: $DEVICE_PASSWORD
+    password: $DEVICE_PASSWORD   # load from environment — do not hardcode
     tls_context: 0           # TLS context index on the device (default 0)
     skip_verify: false       # set true only for self-signed device management certs
