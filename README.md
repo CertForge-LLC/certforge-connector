@@ -28,8 +28,31 @@ Additional drivers can be added by implementing the [`Device` interface](#adding
 
 - A CertForge account with at least one CA connector configured
 - The device registered under **Network Devices** in CertForge
-- A **connector token** from CertForge → Settings → API Keys → Connector Tokens (prefix `ct_`)
+- A connector token (created below)
 - The connector host must have TCP access to the device management IP on the configured port (default 443)
+
+## Creating a connector token
+
+The connector authenticates to CertForge using a scoped token. These are separate from general API keys and are restricted to the connector endpoints only.
+
+1. Sign in to CertForge and go to **Settings → Integrations & Sources**
+2. Scroll to **Connector Tokens** and click **New Connector Token**
+3. Give it a descriptive name (e.g. `office-connector`) and click **Create**
+4. Copy the token — it starts with `ct_` and is shown **once only**
+
+Set it as an environment variable on the host running the connector:
+
+```sh
+# Linux / macOS
+export CERTFORGE_API_KEY=ct_...
+```
+
+```powershell
+# Windows (PowerShell)
+$env:CERTFORGE_API_KEY = "ct_..."
+```
+
+Reference `$CERTFORGE_API_KEY` in `connector.yaml` rather than pasting the token directly into the file.
 
 ## Installation
 
