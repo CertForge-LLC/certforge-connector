@@ -17,18 +17,13 @@ api_key: $CERTFORGE_API_KEY
 poll_interval: 30s
 
 devices:
-    # Each entry represents one network device. The id must match the
-    # device ID shown in CertForge → Network Devices.
-    #
-    # Credentials (username / password) are stored encrypted in CertForge and
-    # delivered to the connector automatically with each renewal job — you do
-    # not need to list them here. They can be set as a fallback via environment
-    # variables if you prefer not to store them in CertForge.
+    # Each entry tells the connector which devices it is responsible for.
+    # The id must match the device ID shown in CertForge → Network Devices.
+    # Credentials are stored encrypted in CertForge and delivered automatically
+    # with each renewal job — do not put them here.
   - id: "00000000-0000-0000-0000-000000000000"
-    type: audiocodes         # audiocodes (more types coming)
+    type: audiocodes         # driver name (audiocodes | ribbon | cisco | custom)
     host: 192.168.1.100      # management IP — must be reachable from this host
     port: 443                # default 443
     tls_context: 0           # TLS context index on the device (default 0)
     skip_verify: false       # set true only for self-signed device management certs
-    # username: Admin                  # optional — set in CertForge instead
-    # password: $DEVICE_PASSWORD       # optional — set in CertForge instead
