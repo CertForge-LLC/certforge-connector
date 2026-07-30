@@ -52,6 +52,48 @@ chmod +x certforge-connector-linux-amd64
 mv certforge-connector-linux-amd64 /usr/local/bin/certforge-connector
 ```
 
+### Windows
+
+Download `certforge-connector-windows-amd64.exe` from the [latest release](https://github.com/CertForge-LLC/certforge-connector/releases/latest) and place it wherever you want to run it from, for example `C:\certforge-connector\`.
+
+```powershell
+# PowerShell — download to C:\certforge-connector\
+New-Item -ItemType Directory -Force -Path C:\certforge-connector
+Invoke-WebRequest -Uri https://github.com/CertForge-LLC/certforge-connector/releases/latest/download/certforge-connector-windows-amd64.exe `
+    -OutFile C:\certforge-connector\certforge-connector.exe
+```
+
+Copy `connector.yaml.example` to `C:\certforge-connector\connector.yaml` and fill in your values.
+
+**Run manually (for testing):**
+
+```powershell
+$env:CERTFORGE_API_KEY = "ct_..."
+$env:DEVICE_PASSWORD   = "hunter2"
+C:\certforge-connector\certforge-connector.exe -config C:\certforge-connector\connector.yaml
+```
+
+**Run as a Windows service using [NSSM](https://nssm.cc):**
+
+NSSM wraps any executable as a proper Windows service with automatic restart and event log integration. Download it from [nssm.cc](https://nssm.cc/download), then from an elevated command prompt:
+
+```cmd
+nssm install CertForgeConnector "C:\certforge-connector\certforge-connector.exe"
+nssm set CertForgeConnector AppParameters "-config C:\certforge-connector\connector.yaml"
+nssm set CertForgeConnector AppDirectory "C:\certforge-connector"
+nssm set CertForgeConnector AppEnvironmentExtra "CERTFORGE_API_KEY=ct_..." "DEVICE_PASSWORD=hunter2"
+nssm set CertForgeConnector Start SERVICE_AUTO_START
+nssm start CertForgeConnector
+```
+
+To update the service after downloading a new binary, stop the service, replace the `.exe`, and start it again:
+
+```cmd
+nssm stop CertForgeConnector
+:: replace the .exe
+nssm start CertForgeConnector
+```
+
 ### Docker
 
 ```sh
@@ -113,10 +155,20 @@ The `id` for each device is the UUID shown on the CertForge Network Devices page
 Any value in `connector.yaml` can reference an environment variable with the standard `$VAR` or `${VAR}` syntax. The file is expanded before parsing. Useful for secrets:
 
 ```sh
+# Linux / macOS
 export CERTFORGE_API_KEY=ct_...
 export DEVICE_PASSWORD=hunter2
 certforge-connector -config /etc/certforge-connector/connector.yaml
 ```
+
+```powershell
+# Windows (PowerShell)
+$env:CERTFORGE_API_KEY = "ct_..."
+$env:DEVICE_PASSWORD   = "hunter2"
+.\certforge-connector.exe -config .\connector.yaml
+```
+
+When running as a Windows service, set secrets via `nssm set CertForgeConnector AppEnvironmentExtra` (see [Windows installation](#windows)) rather than in the YAML file.
 
 ### Flags
 
