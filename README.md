@@ -63,6 +63,8 @@ Download `certforge-connector-windows-amd64.exe` from the [latest release](https
 New-Item -ItemType Directory -Force -Path C:\certforge-connector
 Invoke-WebRequest -Uri https://github.com/CertForge-LLC/certforge-connector/releases/latest/download/certforge-connector-windows-amd64.exe `
     -OutFile C:\certforge-connector\certforge-connector.exe
+Invoke-WebRequest -Uri https://github.com/CertForge-LLC/certforge-connector/releases/latest/download/connector.yaml.example `
+    -OutFile C:\certforge-connector\connector.yaml.example
 ```
 
 Or use `curl.exe` (built into Windows 10/11), which handles TLS automatically:
@@ -71,11 +73,17 @@ Or use `curl.exe` (built into Windows 10/11), which handles TLS automatically:
 mkdir C:\certforge-connector
 curl.exe -L -o C:\certforge-connector\certforge-connector.exe ^
   https://github.com/CertForge-LLC/certforge-connector/releases/latest/download/certforge-connector-windows-amd64.exe
+curl.exe -L -o C:\certforge-connector\connector.yaml.example ^
+  https://github.com/CertForge-LLC/certforge-connector/releases/latest/download/connector.yaml.example
 ```
 
-> **Administrator privileges** are not required to download the binary. You do need an elevated prompt to install it as a Windows service (the NSSM steps below).
+> **Administrator privileges** are not required to download these files. You do need an elevated prompt to install it as a Windows service (the NSSM steps below).
 
-Copy `connector.yaml.example` to `C:\certforge-connector\connector.yaml` and fill in your values.
+Copy `connector.yaml.example` to `connector.yaml` and fill in your values:
+
+```cmd
+copy C:\certforge-connector\connector.yaml.example C:\certforge-connector\connector.yaml
+```
 
 **Run manually (for testing):**
 
