@@ -19,6 +19,8 @@ type Job struct {
 	Host        string `json:"host"`
 	Port        int    `json:"port"`
 	TLSContext  int    `json:"tls_context"`
+	Username    string `json:"username,omitempty"`
+	Password    string `json:"password,omitempty"`
 	Certificate string `json:"certificate"` // populated when status=cert_ready
 }
 

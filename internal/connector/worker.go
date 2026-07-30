@@ -93,7 +93,16 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 		return fmt.Errorf("device %s not in connector.yaml — add it under devices:", j.DeviceID)
 	}
 
-	dev, err := devCfg.NewDevice()
+	// Job credentials from CertForge take precedence; yaml credentials are the fallback.
+	effective := *devCfg
+	if j.Username != "" {
+		effective.Username = j.Username
+	}
+	if j.Password != "" {
+		effective.Password = j.Password
+	}
+
+	dev, err := effective.NewDevice()
 	if err != nil {
 		return fmt.Errorf("init device driver: %w", err)
 	}
