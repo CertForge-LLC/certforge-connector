@@ -10,6 +10,7 @@ import (
 )
 
 // Job is a pending renewal job returned by the CertForge connector API.
+// All device connection details are included — no yaml device list needed.
 type Job struct {
 	ID          string `json:"id"`
 	DeviceID    string `json:"device_id"`
@@ -19,9 +20,21 @@ type Job struct {
 	Host        string `json:"host"`
 	Port        int    `json:"port"`
 	TLSContext  int    `json:"tls_context"`
+	SkipVerify  bool   `json:"skip_verify"`
 	Username    string `json:"username,omitempty"`
 	Password    string `json:"password,omitempty"`
 	Certificate string `json:"certificate"` // populated when status=cert_ready
+}
+
+// RemoteDevice is a device entry returned by the CertForge connector devices API.
+// Used for background cert reads; no credentials included.
+type RemoteDevice struct {
+	ID         string `json:"id"`
+	Type       string `json:"type"`
+	Host       string `json:"host"`
+	Port       int    `json:"port"`
+	TLSContext int    `json:"tls_context"`
+	SkipVerify bool   `json:"skip_verify"`
 }
 
 // Client talks to the CertForge connector REST API.
@@ -39,13 +52,23 @@ func NewClient(baseURL, apiKey string) *Client {
 	}
 }
 
-// PollJobs returns jobs in pending_csr state for this connector's org.
+// PollJobs returns pending jobs for this connector's org.
 func (c *Client) PollJobs() ([]Job, error) {
 	var jobs []Job
 	if err := c.get("/api/v1/connector/jobs", &jobs); err != nil {
 		return nil, err
 	}
 	return jobs, nil
+}
+
+// GetDevices returns all devices registered in CertForge for this org.
+// Used for background cert discovery — no credentials included.
+func (c *Client) GetDevices() ([]RemoteDevice, error) {
+	var devices []RemoteDevice
+	if err := c.get("/api/v1/connector/devices", &devices); err != nil {
+		return nil, err
+	}
+	return devices, nil
 }
 
 // GetJob returns the current state of a single job.

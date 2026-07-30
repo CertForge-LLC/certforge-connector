@@ -69,12 +69,11 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.PollInterval == 0 {
 		cfg.PollInterval = 30 * time.Second
 	}
+	// devices: is optional — CertForge is the source of truth for device topology.
+	// yaml entries act as credential overrides or connection parameter overrides.
 	for i, d := range cfg.Devices {
 		if d.ID == "" {
-			return nil, fmt.Errorf("device[%d]: id is required", i)
-		}
-		if d.Host == "" {
-			return nil, fmt.Errorf("device[%d] %s: host is required", i, d.ID)
+			return nil, fmt.Errorf("device[%d]: id is required when listing devices in yaml", i)
 		}
 		if cfg.Devices[i].Port == 0 {
 			cfg.Devices[i].Port = 443

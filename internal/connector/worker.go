@@ -20,22 +20,18 @@ func NewWorker(cfg *Config) *Worker {
 	}
 }
 
-// certReportInterval controls how often the connector reads current certs from
-// devices and reports them to CertForge (independent of the renewal job poll).
 const certReportInterval = 6 * time.Hour
 
 // Run polls in a loop until ctx is cancelled.
 func (w *Worker) Run(ctx context.Context) {
 	log.Printf("[connector] starting — polling %s every %s", w.cfg.CertForgeURL, w.cfg.PollInterval)
-	log.Printf("[connector] %d device(s) configured", len(w.cfg.Devices))
 
 	jobTicker := time.NewTicker(w.cfg.PollInterval)
 	certTicker := time.NewTicker(certReportInterval)
 	defer jobTicker.Stop()
 	defer certTicker.Stop()
 
-	// Report current cert state immediately on startup so CertForge has baseline
-	// visibility before any renewal jobs have run.
+	// Baseline cert read on startup.
 	w.poll(ctx)
 	w.reportCurrentCerts(ctx)
 
@@ -52,10 +48,20 @@ func (w *Worker) Run(ctx context.Context) {
 	}
 }
 
-// reportCurrentCerts reads the live TLS certificate from each configured device
-// and reports its expiry, CN, and SANs to CertForge for baseline visibility and DTP matching.
+// reportCurrentCerts reads the live TLS cert from every device in CertForge
+// and reports expiry, CN, and SANs back. Falls back to the yaml device list
+// if the CertForge API call fails.
 func (w *Worker) reportCurrentCerts(ctx context.Context) {
-	for _, d := range w.cfg.Devices {
+	devices, err := w.client.GetDevices()
+	if err != nil {
+		log.Printf("[connector] fetch device list: %v — falling back to yaml", err)
+		// Fall back to yaml device list.
+		for _, d := range w.cfg.Devices {
+			w.reportOneCert(d.ID, d.Host, d.Port, d.SkipVerify)
+		}
+		return
+	}
+	for _, d := range devices {
 		w.reportOneCert(d.ID, d.Host, d.Port, d.SkipVerify)
 	}
 }
@@ -90,28 +96,36 @@ func (w *Worker) poll(ctx context.Context) {
 }
 
 func (w *Worker) executeJob(ctx context.Context, j Job) error {
-	devCfg := w.cfg.DeviceByID(j.DeviceID)
-	if devCfg == nil {
-		return fmt.Errorf("device %s not in connector.yaml — add it under devices:", j.DeviceID)
-	}
-
-	// Cert-query jobs: read the live cert and report it back; no CSR/install needed.
+	// Cert-query jobs: TLS-read the device cert and report back; no CSR/install.
 	if j.Status == "pending_query" {
-		log.Printf("[connector] job %s: querying cert on %s (%s:%d)", j.ID, j.DeviceName, devCfg.Host, devCfg.Port)
-		w.reportOneCert(j.DeviceID, devCfg.Host, devCfg.Port, devCfg.SkipVerify)
+		log.Printf("[connector] job %s: querying cert on %s (%s:%d)", j.ID, j.DeviceName, j.Host, j.Port)
+		w.reportOneCert(j.DeviceID, j.Host, j.Port, j.SkipVerify)
 		if err := w.client.MarkDone(j.ID); err != nil {
 			log.Printf("[connector] job %s: mark done failed: %v", j.ID, err)
 		}
 		return nil
 	}
 
-	// Job credentials from CertForge take precedence; yaml credentials are the fallback.
-	effective := *devCfg
-	if j.Username != "" {
-		effective.Username = j.Username
+	// All connection details and credentials come from CertForge via the job.
+	// The yaml device list is an optional override — prefer job data.
+	effective := DeviceConfig{
+		ID:         j.DeviceID,
+		Type:       j.DeviceType,
+		Host:       j.Host,
+		Port:       j.Port,
+		TLSContext: j.TLSContext,
+		SkipVerify: j.SkipVerify,
+		Username:   j.Username,
+		Password:   j.Password,
 	}
-	if j.Password != "" {
-		effective.Password = j.Password
+	// If the device is also in yaml, its credentials act as a fallback.
+	if devCfg := w.cfg.DeviceByID(j.DeviceID); devCfg != nil {
+		if effective.Username == "" {
+			effective.Username = devCfg.Username
+		}
+		if effective.Password == "" {
+			effective.Password = devCfg.Password
+		}
 	}
 
 	dev, err := effective.NewDevice()
@@ -120,7 +134,7 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 	}
 
 	log.Printf("[connector] job %s: pulling CSR from %s (%s:%d ctx %d)",
-		j.ID, j.DeviceName, devCfg.Host, devCfg.Port, devCfg.TLSContext)
+		j.ID, j.DeviceName, j.Host, j.Port, j.TLSContext)
 
 	csrPEM, err := dev.PullCSR(ctx)
 	if err != nil {
@@ -142,7 +156,6 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 	}
 
 	if err := w.client.MarkDone(j.ID); err != nil {
-		// Cert IS installed — log and continue rather than treating as failure.
 		log.Printf("[connector] job %s: mark done failed (cert is installed): %v", j.ID, err)
 	}
 	log.Printf("[connector] job %s: complete — cert installed on %s", j.ID, j.DeviceName)

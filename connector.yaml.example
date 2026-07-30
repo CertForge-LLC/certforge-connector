@@ -1,8 +1,8 @@
 # CertForge connector configuration
 # Copy this file to connector.yaml and fill in your values.
 #
-# SECRETS: Do not put passwords or API keys directly in this file.
-# Reference environment variables instead — the connector expands them at startup.
+# SECRETS: Do not put the API key directly in this file.
+# Reference an environment variable — the connector expands them at startup.
 # Example (systemd): set Environment= in your unit override, or use an EnvironmentFile=.
 # Example (Docker):  pass -e CERTFORGE_API_KEY=... or use an env_file in compose.
 
@@ -16,14 +16,14 @@ api_key: $CERTFORGE_API_KEY
 # How often to poll CertForge for pending jobs (default 30s).
 poll_interval: 30s
 
-devices:
-    # Each entry tells the connector which devices it is responsible for.
-    # The id must match the device ID shown in CertForge → Network Devices.
-    # Credentials are stored encrypted in CertForge and delivered automatically
-    # with each renewal job — do not put them here.
-  - id: "00000000-0000-0000-0000-000000000000"
-    type: audiocodes         # driver name (audiocodes | ribbon | cisco | custom)
-    host: 192.168.1.100      # management IP — must be reachable from this host
-    port: 443                # default 443
-    tls_context: 0           # TLS context index on the device (default 0)
-    skip_verify: false       # set true only for self-signed device management certs
+# Device topology (host, port, type, TLS context, credentials) is stored in
+# CertForge and delivered automatically with each job — no device list needed here.
+#
+# The optional devices: block below is only for local credential overrides, e.g.
+# if you store your device password in a secrets manager and inject it via env var
+# rather than saving it in CertForge.  Most deployments can omit it entirely.
+#
+# devices:
+#   - id: "00000000-0000-0000-0000-000000000000"  # CertForge device UUID
+#     username: admin
+#     password: $SBC_PASSWORD
