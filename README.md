@@ -58,10 +58,22 @@ Download `certforge-connector-windows-amd64.exe` from the [latest release](https
 
 ```powershell
 # PowerShell — download to C:\certforge-connector\
+# Force TLS 1.2 first (required; older PowerShell defaults to TLS 1.0 which GitHub rejects)
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 New-Item -ItemType Directory -Force -Path C:\certforge-connector
 Invoke-WebRequest -Uri https://github.com/CertForge-LLC/certforge-connector/releases/latest/download/certforge-connector-windows-amd64.exe `
     -OutFile C:\certforge-connector\certforge-connector.exe
 ```
+
+Or use `curl.exe` (built into Windows 10/11), which handles TLS automatically:
+
+```cmd
+mkdir C:\certforge-connector
+curl.exe -L -o C:\certforge-connector\certforge-connector.exe ^
+  https://github.com/CertForge-LLC/certforge-connector/releases/latest/download/certforge-connector-windows-amd64.exe
+```
+
+> **Administrator privileges** are not required to download the binary. You do need an elevated prompt to install it as a Windows service (the NSSM steps below).
 
 Copy `connector.yaml.example` to `C:\certforge-connector\connector.yaml` and fill in your values.
 
