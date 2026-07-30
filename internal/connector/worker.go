@@ -20,24 +20,57 @@ func NewWorker(cfg *Config) *Worker {
 	}
 }
 
+// certReportInterval controls how often the connector reads current certs from
+// devices and reports them to CertForge (independent of the renewal job poll).
+const certReportInterval = 6 * time.Hour
+
 // Run polls in a loop until ctx is cancelled.
 func (w *Worker) Run(ctx context.Context) {
 	log.Printf("[connector] starting — polling %s every %s", w.cfg.CertForgeURL, w.cfg.PollInterval)
 	log.Printf("[connector] %d device(s) configured", len(w.cfg.Devices))
 
-	ticker := time.NewTicker(w.cfg.PollInterval)
-	defer ticker.Stop()
+	jobTicker := time.NewTicker(w.cfg.PollInterval)
+	certTicker := time.NewTicker(certReportInterval)
+	defer jobTicker.Stop()
+	defer certTicker.Stop()
 
+	// Report current cert state immediately on startup so CertForge has baseline
+	// visibility before any renewal jobs have run.
 	w.poll(ctx)
+	w.reportCurrentCerts(ctx)
 
 	for {
 		select {
 		case <-ctx.Done():
 			log.Printf("[connector] shutting down")
 			return
-		case <-ticker.C:
+		case <-jobTicker.C:
 			w.poll(ctx)
+		case <-certTicker.C:
+			w.reportCurrentCerts(ctx)
 		}
+	}
+}
+
+// reportCurrentCerts reads the live TLS certificate from each configured device
+// and reports its expiry to CertForge. This gives CertForge visibility into
+// certs that were not issued through the connector (e.g. pre-existing certs).
+func (w *Worker) reportCurrentCerts(ctx context.Context) {
+	for _, d := range w.cfg.Devices {
+		port := d.Port
+		if port == 0 {
+			port = 443
+		}
+		notAfter, err := tlsReadCert(d.Host, port, d.SkipVerify)
+		if err != nil {
+			log.Printf("[connector] cert-read %s (%s:%d): %v", d.ID, d.Host, port, err)
+			continue
+		}
+		if err := w.client.ReportCert(d.ID, notAfter); err != nil {
+			log.Printf("[connector] cert-report %s: %v", d.ID, err)
+			continue
+		}
+		log.Printf("[connector] cert-report %s: not_after=%s", d.ID, notAfter.Format("2006-01-02"))
 	}
 }
 

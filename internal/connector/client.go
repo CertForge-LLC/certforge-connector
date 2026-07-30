@@ -70,6 +70,16 @@ func (c *Client) MarkDone(jobID string) error {
 	return c.post("/api/v1/connector/jobs/"+jobID+"/done", nil, nil)
 }
 
+// ReportCert tells CertForge the current certificate expiry on a device.
+// CertForge uses this to populate cert_not_after and next_expected_at without
+// needing a full renewal cycle to have completed first.
+func (c *Client) ReportCert(deviceID string, notAfter time.Time) error {
+	body, _ := json.Marshal(map[string]string{
+		"not_after": notAfter.UTC().Format(time.RFC3339),
+	})
+	return c.post("/api/v1/connector/devices/"+deviceID+"/cert", body, nil)
+}
+
 func (c *Client) get(path string, out any) error {
 	req, err := http.NewRequest(http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
