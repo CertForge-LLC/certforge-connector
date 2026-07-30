@@ -1,0 +1,9 @@
+services:
+  certforge-connector:
+    image: ghcr.io/certforge/certforge-connector:latest
+    restart: unless-stopped
+    # network_mode: host allows the connector to reach devices on private
+    # management VLANs that are not reachable from the internet.
+    network_mode: host
+    volumes:
+      - ./connector.yaml:/etc/certforge-connector/connector.yaml:ro

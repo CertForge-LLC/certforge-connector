@@ -1,0 +1,25 @@
+# CertForge connector configuration
+# Copy this file to connector.yaml and fill in your values.
+# Environment variables are expanded (e.g. $CERTFORGE_API_KEY).
+
+# URL of your CertForge instance.
+certforge_url: https://app.certgovernance.app
+
+# API key from CertForge → Settings → API Keys.
+# Use a key scoped to the "connector" role.
+api_key: $CERTFORGE_API_KEY
+
+# How often to poll CertForge for pending jobs (default 30s).
+poll_interval: 30s
+
+devices:
+    # Each entry represents one network device. The id must match the
+    # device ID shown in CertForge → Network Devices.
+  - id: "00000000-0000-0000-0000-000000000000"
+    type: audiocodes         # audiocodes (more types coming)
+    host: 192.168.1.100      # management IP — must be reachable from this host
+    port: 443                # default 443
+    username: Admin
+    password: $DEVICE_PASSWORD
+    tls_context: 0           # TLS context index on the device (default 0)
+    skip_verify: false       # set true only for self-signed device management certs
