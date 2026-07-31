@@ -21,6 +21,7 @@ The connector is stateless. It holds no certificates and no CA credentials — t
 | Type | Driver |
 |------|--------|
 | AudioCodes Mediant (VE/E/SW/HW) | `audiocodes` |
+| F5 BIG-IP (iControl REST, TMOS 11.6+) | `f5` |
 
 Additional drivers can be added by implementing the [`Device` interface](#adding-a-device-type).
 

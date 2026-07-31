@@ -29,7 +29,7 @@ poll_interval: 30s
 #
 # devices:
 #   - id: "00000000-0000-0000-0000-000000000000"  # CertForge device UUID
-#     type: audiocodes                              # must match a type this connector supports
+#     type: audiocodes   # audiocodes | f5 | any custom type registered in this binary
 #     username: admin
 #     password: $SBC_PASSWORD
 

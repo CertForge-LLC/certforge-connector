@@ -7,6 +7,7 @@ import (
 
 	"github.com/certforge/certforge-connector/internal/device"
 	"github.com/certforge/certforge-connector/internal/device/audiocodes"
+	"github.com/certforge/certforge-connector/internal/device/f5"
 	"gopkg.in/yaml.v3"
 )
 
@@ -63,7 +64,7 @@ type DeviceConfig struct {
 // SupportedDeviceTypes returns the list of device driver types this connector binary supports.
 // Update this alongside the switch in NewDevice whenever a new driver is added.
 func SupportedDeviceTypes() []string {
-	return []string{"audiocodes"}
+	return []string{"audiocodes", "f5"}
 }
 
 // NewDevice returns a device.Device driver for this config entry.
@@ -79,8 +80,17 @@ func (d *DeviceConfig) NewDevice() (device.Device, error) {
 			TLSContext: d.TLSContext,
 			SkipVerify: d.SkipVerify,
 		}, nil
+	case "f5":
+		return &f5.Client{
+			Host:       d.Host,
+			Port:       d.Port,
+			Username:   d.Username,
+			Password:   d.Password,
+			TLSContext: d.TLSContext,
+			SkipVerify: d.SkipVerify,
+		}, nil
 	default:
-		return nil, fmt.Errorf("unknown device type %q — supported: audiocodes", d.Type)
+		return nil, fmt.Errorf("unknown device type %q — supported: audiocodes, f5", d.Type)
 	}
 }
 
