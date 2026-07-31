@@ -37,3 +37,20 @@ poll_interval: 30s
 #   cert: /etc/certforge-connector/ca.crt   # PEM CA certificate
 #   key: /etc/certforge-connector/ca.key    # PEM CA private key (RSA or ECDSA)
 #   validity_days: 365                       # signed cert validity; default 365
+#
+#   # Inventory sync (optional) — push all certs this CA has issued to CertForge
+#   # so they appear in the discovery inventory as tracked.  Requires a CA connector
+#   # record of type "Private / Internal CA" created in CertForge → Settings → CA Connectors.
+#   ca_connector_id: 00000000-0000-0000-0000-000000000000  # ID from CertForge UI
+#
+#   # Option A: file-based CA (OpenSSL, Easy-RSA, cfssl, etc.)
+#   # Point at the directory where your CA writes issued cert PEM files.
+#   issued_certs_dir: /etc/pki/CA/newcerts   # OpenSSL default; Easy-RSA: pki/issued/
+#   crl_file: /etc/pki/CA/crl.pem           # optional — revoked certs are excluded
+#
+#   # Option B: HashiCorp Vault PKI secrets engine
+#   # The connector lists serials via the Vault API; revocation is read inline.
+#   vault_pki:
+#     addr: https://vault.example.com        # Vault address
+#     token: $VAULT_TOKEN                    # Vault token (or set VAULT_TOKEN env var)
+#     mount: pki                             # PKI secrets engine mount path (default: pki)

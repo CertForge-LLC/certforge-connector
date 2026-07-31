@@ -200,6 +200,47 @@ devices:
 
 The `id` for each device is the UUID shown on the CertForge Network Devices page. The connector ignores jobs for devices not listed in its config, so you can run multiple connector instances covering different VLANs.
 
+### Private CA — local signing
+
+If your signing CA is on-prem and you do not want CSRs leaving the network, add a `private_ca` block. The connector signs device CSRs locally and notifies CertForge for audit purposes:
+
+```yaml
+private_ca:
+  cert: /etc/certforge-connector/ca.crt   # PEM CA certificate
+  key:  /etc/certforge-connector/ca.key   # PEM CA private key (RSA or ECDSA)
+  validity_days: 365
+```
+
+### Private CA — inventory sync
+
+To push the full inventory of certs your CA has issued into CertForge (so they appear in Discovery as tracked), first create a **CA connector** record in CertForge → Settings → CA Connectors → Add → "Private / Internal CA (On-Prem Agent)". Then add `ca_connector_id` and an inventory source to `private_ca`:
+
+**File-based CAs** (OpenSSL `openssl ca`, Easy-RSA, cfssl — anything that writes PEM files to a directory):
+
+```yaml
+private_ca:
+  cert: /etc/certforge-connector/ca.crt
+  key:  /etc/certforge-connector/ca.key
+  ca_connector_id: 00000000-0000-0000-0000-000000000000  # from CertForge UI
+  issued_certs_dir: /etc/pki/CA/newcerts  # OpenSSL default; Easy-RSA: pki/issued/
+  crl_file: /etc/pki/CA/crl.pem          # optional — revoked certs excluded from push
+```
+
+**HashiCorp Vault PKI** (revocation read inline — no CRL file needed):
+
+```yaml
+private_ca:
+  cert: /etc/certforge-connector/ca.crt
+  key:  /etc/certforge-connector/ca.key
+  ca_connector_id: 00000000-0000-0000-0000-000000000000
+  vault_pki:
+    addr: https://vault.example.com
+    token: $VAULT_TOKEN   # or set the VAULT_TOKEN environment variable
+    mount: pki            # PKI secrets engine mount path (default: pki)
+```
+
+The connector syncs inventory on startup and every 6 hours. Scope (which domains, EKU, date range to include) is configured in CertForge on the CA connector record and fetched by the agent at each sync.
+
 ### Environment variables
 
 Only one secret is typically needed:
@@ -241,6 +282,17 @@ On startup and every 6 hours, the connector TLS-dials each configured device on 
 CertForge uses this to:
 - Populate **cert expiry** and **renewal lead** on the Network Devices page before any renewal job has run
 - Match the cert's CN/SANs against your Domain Trust Policies (DTPs) to identify which policy governs each device
+
+### Private CA inventory sync
+
+On startup and every 6 hours, when `ca_connector_id` and an inventory source (`issued_certs_dir` or `vault_pki`) are configured, the connector:
+
+1. Fetches the sync scope from CertForge (domains, EKU, date range, include-expired flag)
+2. Reads the issued cert inventory — either walking the PEM file directory or calling the Vault PKI list API
+3. Applies scope filters and excludes revoked certs (from the CRL file or Vault revocation_time)
+4. Pushes the filtered batch to CertForge via `POST /api/v1/connector/ca-connectors/{id}/inventory`
+
+Pushed certs land in Discovery with `governance_status=tracked` — they are immediately under CertForge management, not in the unreviewed queue.
 
 ### Cert query (on-demand)
 
