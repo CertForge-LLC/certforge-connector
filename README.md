@@ -73,6 +73,9 @@ Download the pre-built binary for your platform from the [latest release](https:
 curl -LO https://github.com/CertForge-LLC/certforge-connector/releases/latest/download/certforge-connector-linux-amd64
 chmod +x certforge-connector-linux-amd64
 mv certforge-connector-linux-amd64 /usr/local/bin/certforge-connector
+
+# Optional: download the example config to use as a starting point
+curl -LO https://github.com/CertForge-LLC/certforge-connector/releases/latest/download/connector.yaml.example
 ```
 
 ### Windows
