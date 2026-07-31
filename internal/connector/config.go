@@ -23,16 +23,27 @@ type Config struct {
 // Provide the CA certificate and private key files; CertForge is still notified
 // for audit and inventory purposes via the ReportCert and MarkDone calls.
 //
-// To enable full inventory sync (like a CA connector), also set ca_connector_id
-// and issued_certs_dir. The agent will walk that directory and push all issued certs
-// to CertForge so they appear in the discovery inventory as tracked.
+// To enable full inventory sync (like a CA connector), set ca_connector_id and
+// either issued_certs_dir (file-based CAs like OpenSSL/Easy-RSA) or vault_pki
+// (HashiCorp Vault PKI secrets engine). The agent pushes all issued certs to
+// CertForge so they appear in the discovery inventory as tracked.
 type PrivateCAConfig struct {
-	CertFile       string `yaml:"cert"`             // path to PEM CA certificate
-	KeyFile        string `yaml:"key"`              // path to PEM CA private key
-	ValidityDays   int    `yaml:"validity_days"`    // cert validity; default 365
-	CAConnectorID  string `yaml:"ca_connector_id"`  // CertForge CA connector record ID for inventory push
-	IssuedCertsDir string `yaml:"issued_certs_dir"` // directory of PEM cert files to sync as inventory
-	CRLFile        string `yaml:"crl_file"`         // optional CRL PEM; revoked certs are excluded from inventory
+	CertFile       string          `yaml:"cert"`             // path to PEM CA certificate
+	KeyFile        string          `yaml:"key"`              // path to PEM CA private key
+	ValidityDays   int             `yaml:"validity_days"`    // cert validity; default 365
+	CAConnectorID  string          `yaml:"ca_connector_id"`  // CertForge CA connector record ID for inventory push
+	IssuedCertsDir string          `yaml:"issued_certs_dir"` // directory of PEM cert files to sync as inventory
+	CRLFile        string          `yaml:"crl_file"`         // optional CRL PEM; revoked certs are excluded from inventory
+	VaultPKI       *VaultPKIConfig `yaml:"vault_pki"`        // Vault PKI secrets engine (alternative to issued_certs_dir)
+}
+
+// VaultPKIConfig points the agent at a HashiCorp Vault PKI secrets engine.
+// The agent lists all issued serials and fetches each cert; revocation status
+// is read inline from the Vault response (no separate CRL file needed).
+type VaultPKIConfig struct {
+	Addr  string `yaml:"addr"`  // Vault address, e.g. https://vault.example.com
+	Token string `yaml:"token"` // Vault token; falls back to $VAULT_TOKEN if empty
+	Mount string `yaml:"mount"` // PKI secrets engine mount path; default "pki"
 }
 
 // DeviceConfig holds the on-prem connection details for one network device.

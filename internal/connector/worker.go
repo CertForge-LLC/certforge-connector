@@ -65,14 +65,17 @@ func (w *Worker) Run(ctx context.Context) {
 }
 
 // syncInventory pushes the full cert inventory of the local CA to CertForge.
-// Does nothing when ca_connector_id or issued_certs_dir is not configured.
+// Does nothing when ca_connector_id is not configured or no inventory source is set.
 func (w *Worker) syncInventory(ctx context.Context) {
 	ca := w.cfg.PrivateCA
-	if ca == nil || ca.CAConnectorID == "" || ca.IssuedCertsDir == "" {
+	if ca == nil || ca.CAConnectorID == "" {
+		return
+	}
+	if ca.IssuedCertsDir == "" && ca.VaultPKI == nil {
 		return
 	}
 
-	// Fetch scope from CertForge to know what to include.
+	// Fetch scope from CertForge.
 	connectors, err := w.client.GetCAConnectors()
 	if err != nil {
 		log.Printf("[connector] inventory sync: fetch ca-connectors: %v", err)
@@ -92,20 +95,27 @@ func (w *Worker) syncInventory(ctx context.Context) {
 		return
 	}
 
-	// Read CRL revocation list if configured.
-	var revokedSerials map[string]bool
-	if ca.CRLFile != "" {
-		revokedSerials, err = ReadRevokedSerials(ca.CRLFile)
+	var certs []InventoryCert
+	if ca.VaultPKI != nil {
+		certs, err = FetchVaultPKICerts(*ca.VaultPKI, scope)
 		if err != nil {
-			log.Printf("[connector] inventory sync: read CRL: %v", err)
-			// Non-fatal — continue without revocation filtering.
+			log.Printf("[connector] inventory sync: vault-pki: %v", err)
+			return
 		}
-	}
-
-	certs, err := ScanIssuedCerts(ca.IssuedCertsDir, scope, revokedSerials)
-	if err != nil {
-		log.Printf("[connector] inventory sync: scan %s: %v", ca.IssuedCertsDir, err)
-		return
+	} else {
+		var revokedSerials map[string]bool
+		if ca.CRLFile != "" {
+			revokedSerials, err = ReadRevokedSerials(ca.CRLFile)
+			if err != nil {
+				log.Printf("[connector] inventory sync: read CRL: %v", err)
+				// Non-fatal — continue without revocation filtering.
+			}
+		}
+		certs, err = ScanIssuedCerts(ca.IssuedCertsDir, scope, revokedSerials)
+		if err != nil {
+			log.Printf("[connector] inventory sync: scan %s: %v", ca.IssuedCertsDir, err)
+			return
+		}
 	}
 
 	count, err := w.client.PushInventory(ca.CAConnectorID, certs)
