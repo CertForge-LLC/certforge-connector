@@ -23,6 +23,9 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	worker := connector.NewWorker(cfg)
+	worker, err := connector.NewWorker(cfg)
+	if err != nil {
+		log.Fatalf("worker: %v", err)
+	}
 	worker.Run(ctx)
 }

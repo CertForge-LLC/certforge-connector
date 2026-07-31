@@ -9,15 +9,25 @@ import (
 
 // Worker polls CertForge for device jobs and executes them.
 type Worker struct {
-	cfg    *Config
-	client *Client
+	cfg      *Config
+	client   *Client
+	localCA  *LocalCA // non-nil when private_ca is configured
 }
 
-func NewWorker(cfg *Config) *Worker {
-	return &Worker{
+func NewWorker(cfg *Config) (*Worker, error) {
+	w := &Worker{
 		cfg:    cfg,
 		client: NewClient(cfg.CertForgeURL, cfg.APIKey),
 	}
+	if cfg.PrivateCA != nil {
+		ca, err := LoadLocalCA(*cfg.PrivateCA)
+		if err != nil {
+			return nil, err
+		}
+		w.localCA = ca
+		log.Printf("[connector] private CA loaded from %s (validity %d days)", cfg.PrivateCA.CertFile, ca.validDays)
+	}
+	return w, nil
 }
 
 const certReportInterval = 6 * time.Hour
@@ -141,18 +151,38 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 		return fmt.Errorf("pull CSR: %w", err)
 	}
 
-	log.Printf("[connector] job %s: submitting CSR to CertForge", j.ID)
-	result, err := w.client.SubmitCSR(j.ID, csrPEM)
-	if err != nil {
-		return fmt.Errorf("submit CSR: %w", err)
-	}
-	if result.Certificate == "" {
-		return fmt.Errorf("CertForge returned empty certificate")
+	var certPEM string
+	if w.localCA != nil {
+		log.Printf("[connector] job %s: signing CSR with local CA", j.ID)
+		certPEM, err = w.localCA.SignCSR(csrPEM)
+		if err != nil {
+			return fmt.Errorf("local CA sign: %w", err)
+		}
+	} else {
+		log.Printf("[connector] job %s: submitting CSR to CertForge", j.ID)
+		result, err := w.client.SubmitCSR(j.ID, csrPEM)
+		if err != nil {
+			return fmt.Errorf("submit CSR: %w", err)
+		}
+		if result.Certificate == "" {
+			return fmt.Errorf("CertForge returned empty certificate")
+		}
+		certPEM = result.Certificate
 	}
 
 	log.Printf("[connector] job %s: installing cert on %s", j.ID, j.DeviceName)
-	if err := dev.InstallCert(ctx, result.Certificate); err != nil {
+	if err := dev.InstallCert(ctx, certPEM); err != nil {
 		return fmt.Errorf("install cert: %w", err)
+	}
+
+	// When using a local CA, report the installed cert back to CertForge
+	// so inventory and expiry tracking stay current.
+	if w.localCA != nil {
+		if info, parseErr := parseCertPEM(certPEM); parseErr == nil {
+			if repErr := w.client.ReportCert(j.DeviceID, info); repErr != nil {
+				log.Printf("[connector] job %s: report cert to CertForge: %v", j.ID, repErr)
+			}
+		}
 	}
 
 	if err := w.client.MarkDone(j.ID); err != nil {

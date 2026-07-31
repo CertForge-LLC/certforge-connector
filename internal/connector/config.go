@@ -16,6 +16,16 @@ type Config struct {
 	APIKey       string        `yaml:"api_key"`       // cc_... bearer token from CertForge Settings
 	PollInterval time.Duration `yaml:"poll_interval"` // default 30s
 	Devices      []DeviceConfig `yaml:"devices"`
+	PrivateCA    *PrivateCAConfig `yaml:"private_ca"`
+}
+
+// PrivateCAConfig enables local CSR signing without a CertForge cloud round-trip.
+// Provide the CA certificate and private key files; CertForge is still notified
+// for audit and inventory purposes via the ReportCert and MarkDone calls.
+type PrivateCAConfig struct {
+	CertFile     string `yaml:"cert"`          // path to PEM CA certificate
+	KeyFile      string `yaml:"key"`           // path to PEM CA private key
+	ValidityDays int    `yaml:"validity_days"` // cert validity; default 365
 }
 
 // DeviceConfig holds the on-prem connection details for one network device.

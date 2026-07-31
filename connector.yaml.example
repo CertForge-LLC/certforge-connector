@@ -27,3 +27,13 @@ poll_interval: 30s
 #   - id: "00000000-0000-0000-0000-000000000000"  # CertForge device UUID
 #     username: admin
 #     password: $SBC_PASSWORD
+
+# Private CA (optional) — sign device CSRs locally instead of sending them to
+# CertForge for signing.  Use this when your signing CA is on-prem and you do
+# not want CSRs leaving the network.  CertForge is still notified for audit and
+# inventory tracking via the ReportCert and MarkDone calls.
+#
+# private_ca:
+#   cert: /etc/certforge-connector/ca.crt   # PEM CA certificate
+#   key: /etc/certforge-connector/ca.key    # PEM CA private key (RSA or ECDSA)
+#   validity_days: 365                       # signed cert validity; default 365
