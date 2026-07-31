@@ -101,6 +101,58 @@ func (c *Client) MarkDone(jobID, certPEM string) error {
 	return c.post("/api/v1/connector/jobs/"+jobID+"/done", body, nil)
 }
 
+// ConnectorScope is the sync scope for a private CA connector, fetched from CertForge.
+type ConnectorScope struct {
+	Domains        []string `json:"domains"`
+	EKU            []string `json:"eku"`
+	IncludeExpired bool     `json:"include_expired"`
+	IssuedAfter    string   `json:"issued_after"`
+	SyncInterval   string   `json:"sync_interval"`
+}
+
+// CAConnectorInfo is a CA connector record returned by CertForge.
+type CAConnectorInfo struct {
+	ID    string         `json:"id"`
+	Name  string         `json:"name"`
+	Scope ConnectorScope `json:"scope"`
+}
+
+// InventoryCert is a single cert record for the inventory push API.
+type InventoryCert struct {
+	Serial    string   `json:"serial"`
+	Issuer    string   `json:"issuer"`
+	Subject   string   `json:"subject"`
+	SANs      []string `json:"sans"`
+	EKU       []string `json:"eku"`
+	NotBefore string   `json:"not_before"`
+	NotAfter  string   `json:"not_after"`
+	CertPEM   string   `json:"cert_pem"`
+}
+
+// GetCAConnectors returns CA connectors of type "connector" configured for this org.
+// The agent calls this to discover which private CAs it should sync and fetch scope.
+func (c *Client) GetCAConnectors() ([]CAConnectorInfo, error) {
+	var out []CAConnectorInfo
+	if err := c.get("/api/v1/connector/ca-connectors", &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// PushInventory sends a batch of cert records to CertForge for a specific CA connector.
+// Returns the number of certs accepted by the server.
+func (c *Client) PushInventory(connectorID string, certs []InventoryCert) (int, error) {
+	body, _ := json.Marshal(map[string]any{"certs": certs})
+	var result struct {
+		OK    bool `json:"ok"`
+		Count int  `json:"count"`
+	}
+	if err := c.post("/api/v1/connector/ca-connectors/"+connectorID+"/inventory", body, &result); err != nil {
+		return 0, err
+	}
+	return result.Count, nil
+}
+
 // ReportCert tells CertForge the current certificate expiry, CN, and SANs from
 // a device's live TLS cert. CertForge uses this for baseline visibility and DTP matching.
 func (c *Client) ReportCert(deviceID string, info CertInfo) error {

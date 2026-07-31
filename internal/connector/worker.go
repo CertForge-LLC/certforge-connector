@@ -31,6 +31,7 @@ func NewWorker(cfg *Config) (*Worker, error) {
 }
 
 const certReportInterval = 6 * time.Hour
+const inventorySyncInterval = 6 * time.Hour
 
 // Run polls in a loop until ctx is cancelled.
 func (w *Worker) Run(ctx context.Context) {
@@ -38,12 +39,15 @@ func (w *Worker) Run(ctx context.Context) {
 
 	jobTicker := time.NewTicker(w.cfg.PollInterval)
 	certTicker := time.NewTicker(certReportInterval)
+	inventoryTicker := time.NewTicker(inventorySyncInterval)
 	defer jobTicker.Stop()
 	defer certTicker.Stop()
+	defer inventoryTicker.Stop()
 
-	// Baseline cert read on startup.
+	// Baseline work on startup.
 	w.poll(ctx)
 	w.reportCurrentCerts(ctx)
+	w.syncInventory(ctx)
 
 	for {
 		select {
@@ -54,8 +58,62 @@ func (w *Worker) Run(ctx context.Context) {
 			w.poll(ctx)
 		case <-certTicker.C:
 			w.reportCurrentCerts(ctx)
+		case <-inventoryTicker.C:
+			w.syncInventory(ctx)
 		}
 	}
+}
+
+// syncInventory pushes the full cert inventory of the local CA to CertForge.
+// Does nothing when ca_connector_id or issued_certs_dir is not configured.
+func (w *Worker) syncInventory(ctx context.Context) {
+	ca := w.cfg.PrivateCA
+	if ca == nil || ca.CAConnectorID == "" || ca.IssuedCertsDir == "" {
+		return
+	}
+
+	// Fetch scope from CertForge to know what to include.
+	connectors, err := w.client.GetCAConnectors()
+	if err != nil {
+		log.Printf("[connector] inventory sync: fetch ca-connectors: %v", err)
+		return
+	}
+	var scope ConnectorScope
+	found := false
+	for _, c := range connectors {
+		if c.ID == ca.CAConnectorID {
+			scope = c.Scope
+			found = true
+			break
+		}
+	}
+	if !found {
+		log.Printf("[connector] inventory sync: ca connector %s not found in CertForge", ca.CAConnectorID)
+		return
+	}
+
+	// Read CRL revocation list if configured.
+	var revokedSerials map[string]bool
+	if ca.CRLFile != "" {
+		revokedSerials, err = ReadRevokedSerials(ca.CRLFile)
+		if err != nil {
+			log.Printf("[connector] inventory sync: read CRL: %v", err)
+			// Non-fatal — continue without revocation filtering.
+		}
+	}
+
+	certs, err := ScanIssuedCerts(ca.IssuedCertsDir, scope, revokedSerials)
+	if err != nil {
+		log.Printf("[connector] inventory sync: scan %s: %v", ca.IssuedCertsDir, err)
+		return
+	}
+
+	count, err := w.client.PushInventory(ca.CAConnectorID, certs)
+	if err != nil {
+		log.Printf("[connector] inventory sync: push %d certs: %v", len(certs), err)
+		return
+	}
+	log.Printf("[connector] inventory sync: accepted %d/%d certs", count, len(certs))
 }
 
 // reportCurrentCerts reads the live TLS cert from every device in CertForge

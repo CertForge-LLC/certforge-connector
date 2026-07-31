@@ -22,10 +22,17 @@ type Config struct {
 // PrivateCAConfig enables local CSR signing without a CertForge cloud round-trip.
 // Provide the CA certificate and private key files; CertForge is still notified
 // for audit and inventory purposes via the ReportCert and MarkDone calls.
+//
+// To enable full inventory sync (like a CA connector), also set ca_connector_id
+// and issued_certs_dir. The agent will walk that directory and push all issued certs
+// to CertForge so they appear in the discovery inventory as tracked.
 type PrivateCAConfig struct {
-	CertFile     string `yaml:"cert"`          // path to PEM CA certificate
-	KeyFile      string `yaml:"key"`           // path to PEM CA private key
-	ValidityDays int    `yaml:"validity_days"` // cert validity; default 365
+	CertFile       string `yaml:"cert"`             // path to PEM CA certificate
+	KeyFile        string `yaml:"key"`              // path to PEM CA private key
+	ValidityDays   int    `yaml:"validity_days"`    // cert validity; default 365
+	CAConnectorID  string `yaml:"ca_connector_id"`  // CertForge CA connector record ID for inventory push
+	IssuedCertsDir string `yaml:"issued_certs_dir"` // directory of PEM cert files to sync as inventory
+	CRLFile        string `yaml:"crl_file"`         // optional CRL PEM; revoked certs are excluded from inventory
 }
 
 // DeviceConfig holds the on-prem connection details for one network device.
