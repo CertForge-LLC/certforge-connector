@@ -22,7 +22,9 @@ The connector is stateless. It holds no certificates and no CA credentials — t
 |------|--------|
 | AudioCodes Mediant (VE/E/SW/HW) | `audiocodes` |
 
-Additional drivers can be added by implementing the [`Device` interface](#adding-a-device-type). The type name you register in the factory is what you enter in CertForge's device registration form — CertForge does not need to know about your driver; it just passes the type string back to the connector.
+Additional drivers can be added by implementing the [`Device` interface](#adding-a-device-type).
+
+On startup the connector calls `POST /api/v1/connector/capabilities` to register its list of supported driver types with CertForge. CertForge uses this list to populate the **Device Type** dropdown on the Network Devices registration form — operators pick from whatever types the running connector reports rather than typing a value by hand. No CertForge update is required to support a new driver type.
 
 ## Prerequisites
 
@@ -325,7 +327,7 @@ Alert rules for connector failures and missed check-ins can be configured under 
 
 ## Adding a device type
 
-Implement the `Device` interface in `internal/device/`:
+**1. Implement the `Device` interface** in `internal/device/`:
 
 ```go
 type Device interface {
@@ -334,7 +336,9 @@ type Device interface {
 }
 ```
 
-Then register the new type in the factory in `internal/connector/config.go`:
+See the [AudioCodes driver](internal/device/audiocodes/client.go) as a reference implementation.
+
+**2. Register it in the factory** in `internal/connector/config.go` (`NewDevice`):
 
 ```go
 case "myvendor":
@@ -348,9 +352,17 @@ case "myvendor":
     }, nil
 ```
 
-The type string (e.g. `myvendor`) is what operators enter in CertForge's **Device Type** field when registering a device. CertForge stores it as an opaque string and passes it back to the connector — no CertForge-side changes are needed to support a new driver.
+**3. Add it to `SupportedDeviceTypes()`** in the same file:
 
-Pull requests for new device drivers are welcome. See the [AudioCodes driver](internal/device/audiocodes/client.go) as a reference implementation.
+```go
+func SupportedDeviceTypes() []string {
+    return []string{"audiocodes", "myvendor"}
+}
+```
+
+This list is posted to CertForge on startup. CertForge shows it as a dropdown on the **Network Devices** registration form — once a connector with your new driver connects, `myvendor` appears as a selectable option automatically. No CertForge update is required.
+
+Pull requests for new device drivers are welcome.
 
 ## License
 
