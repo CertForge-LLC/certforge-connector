@@ -16,20 +16,20 @@ api_key: $CERTFORGE_API_KEY
 # How often to poll CertForge for pending jobs (default 30s).
 poll_interval: 30s
 
-# Device topology (host, port, type, TLS context, credentials) is stored in
-# CertForge and delivered automatically with each job — no device list needed here.
+# Device registration, connection details, and credentials are managed in CertForge
+# under Network Devices — there is no device list in this file.  The connector
+# receives everything it needs with each renewal job.
 #
-# The connector registers its supported device types with CertForge on startup.
-# CertForge uses that list to populate the Device Type dropdown on the Network
-# Devices registration form — no manual type entry required.
+# The connector also registers its supported device types with CertForge on startup
+# so the Device Type dropdown in the UI is always populated automatically.
 #
-# The optional devices: block below is only for local credential overrides, e.g.
-# if you store your device password in a secrets manager and inject it via env var
-# rather than saving it in CertForge.  Most deployments can omit it entirely.
+# CREDENTIAL OVERRIDE (advanced, most deployments omit this):
+# If you need to keep credentials local rather than storing them in CertForge,
+# add a devices: block with just id + username + password.  The connector will
+# use these credentials for any job for that device ID and ignore the rest.
 #
 # devices:
 #   - id: "00000000-0000-0000-0000-000000000000"  # CertForge device UUID
-#     type: audiocodes   # audiocodes | f5 | any custom type registered in this binary
 #     username: admin
 #     password: $SBC_PASSWORD
 

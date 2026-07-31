@@ -186,25 +186,11 @@ api_key: $CERTFORGE_API_KEY
 
 # How often to poll CertForge for pending jobs (default 30s).
 poll_interval: 30s
-
-devices:
-  - id: "00000000-0000-0000-0000-000000000000"  # from CertForge → Network Devices
-    type: audiocodes
-    host: 192.168.1.100   # management IP — must be reachable from this host
-    port: 443             # default 443
-    tls_context: 0        # TLS context index on the device (default 0)
-    skip_verify: false    # set true only for self-signed device management certs
 ```
 
-**Device credentials are not stored here.** Username and password are entered in CertForge under **Network Devices → Register Device** and stored encrypted (AES-256-GCM) in CertForge. The connector receives them automatically with each renewal job. If you prefer to keep credentials local, you can still set them in `connector.yaml` as a fallback:
+Device registration, connection details, and credentials are all managed in CertForge under **Network Devices** — there is no device list in the connector config. The connector receives everything it needs with each renewal job.
 
-```yaml
-# Optional — only needed if you are not storing credentials in CertForge
-    username: Admin
-    password: $DEVICE_PASSWORD
-```
-
-The `id` for each device is the UUID shown on the CertForge Network Devices page. The connector ignores jobs for devices not listed in its config, so you can run multiple connector instances covering different VLANs.
+> **Credential override (advanced):** If you need to keep credentials local rather than storing them in CertForge (e.g. secrets manager injection via environment variable), you can add a `devices:` block with just `id`, `username`, and `password`. See `connector.yaml.example` for the format. Most deployments do not need this.
 
 ### Private CA — local signing
 
