@@ -4,17 +4,23 @@ An open-source on-premises agent that automates certificate renewal for network 
 
 ## Why this exists
 
-Network devices — SBCs, voice gateways, load balancers — live on private management VLANs that CertForge cannot reach directly. certforge-connector runs inside your network, polls CertForge for pending renewal jobs, pulls the CSR from the device, sends it to CertForge to be signed, and installs the signed certificate back on the device. No inbound firewall rules required.
+Network devices — SBCs, voice gateways, load balancers — live on private management VLANs that CertForge cannot reach directly. certforge-connector runs inside your network, polls CertForge for pending renewal jobs, pulls the CSR from the device, has it signed, and installs the certificate back on the device. No inbound firewall rules required.
 
 ```
 [CertForge cloud] ←── poll every 30s ──── [certforge-connector]
                                                      │
                                           reaches private VLAN
                                                      │
-                                         [AudioCodes SBC / device]
+                                     [network device (SBC / F5 / gateway)]
 ```
 
-The connector is stateless. It holds no certificates and no CA credentials — those stay in CertForge. If the connector stops, devices simply do not renew until it resumes.
+The connector handles two signing paths:
+
+**Cloud signing (default):** CSRs are submitted to CertForge and signed by a cloud or public CA. CertForge enforces your Domain Trust Policy before issuing.
+
+**On-prem CA signing:** If your CA is internal and CSRs must not leave the network, the connector signs locally using your CA's private key. CertForge is still called to authorize every signing request — validating the domain against your Domain Trust Policy, enforcing key strength and wildcard rules, and recording the approval — before the connector signs. If CertForge is unreachable, the connector does not sign (fail-closed).
+
+The connector is stateless between jobs. If it stops, devices simply do not renew until it resumes.
 
 ## Supported device types
 
