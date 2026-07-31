@@ -19,12 +19,17 @@ poll_interval: 30s
 # Device topology (host, port, type, TLS context, credentials) is stored in
 # CertForge and delivered automatically with each job — no device list needed here.
 #
+# The connector registers its supported device types with CertForge on startup.
+# CertForge uses that list to populate the Device Type dropdown on the Network
+# Devices registration form — no manual type entry required.
+#
 # The optional devices: block below is only for local credential overrides, e.g.
 # if you store your device password in a secrets manager and inject it via env var
 # rather than saving it in CertForge.  Most deployments can omit it entirely.
 #
 # devices:
 #   - id: "00000000-0000-0000-0000-000000000000"  # CertForge device UUID
+#     type: audiocodes                              # must match a type this connector supports
 #     username: admin
 #     password: $SBC_PASSWORD
 
