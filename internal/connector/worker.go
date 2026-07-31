@@ -73,6 +73,7 @@ func (w *Worker) Run(ctx context.Context) {
 	w.poll(ctx)
 	w.reportCurrentCerts(ctx)
 	w.syncInventory(ctx)
+	w.registerCapabilities()
 
 	for {
 		select {
@@ -86,6 +87,12 @@ func (w *Worker) Run(ctx context.Context) {
 		case <-inventoryTicker.C:
 			w.syncInventory(ctx)
 		}
+	}
+}
+
+func (w *Worker) registerCapabilities() {
+	if err := w.client.RegisterCapabilities(SupportedDeviceTypes()); err != nil {
+		log.Printf("[connector] register capabilities: %v", err)
 	}
 }
 

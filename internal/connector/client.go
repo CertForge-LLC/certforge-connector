@@ -193,6 +193,14 @@ func (c *Client) AuthorizeLocalSigning(jobID, cn string, sans []string, keyAlgor
 	return &result, nil
 }
 
+// RegisterCapabilities tells CertForge which device driver types this connector supports.
+// Called on startup and periodically; CertForge uses the list to populate the device-type
+// dropdown in the UI so users never have to type a type name by hand.
+func (c *Client) RegisterCapabilities(deviceTypes []string) error {
+	body, _ := json.Marshal(map[string]any{"device_types": deviceTypes})
+	return c.post("/api/v1/connector/capabilities", body, nil)
+}
+
 // ReportCert tells CertForge the current certificate expiry, CN, and SANs from
 // a device's live TLS cert. CertForge uses this for baseline visibility and DTP matching.
 func (c *Client) ReportCert(deviceID string, info CertInfo) error {

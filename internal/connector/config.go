@@ -60,6 +60,12 @@ type DeviceConfig struct {
 	SkipVerify bool   `yaml:"skip_verify"` // skip TLS cert check on device
 }
 
+// SupportedDeviceTypes returns the list of device driver types this connector binary supports.
+// Update this alongside the switch in NewDevice whenever a new driver is added.
+func SupportedDeviceTypes() []string {
+	return []string{"audiocodes"}
+}
+
 // NewDevice returns a device.Device driver for this config entry.
 // Add new device types here and implement device.Device to support them.
 func (d *DeviceConfig) NewDevice() (device.Device, error) {
