@@ -190,7 +190,22 @@ poll_interval: 30s
 
 Device registration, connection details, and credentials are all managed in CertForge under **Network Devices** — there is no device list in the connector config. The connector receives everything it needs with each renewal job.
 
-> **Credential override (advanced):** If you need to keep credentials local rather than storing them in CertForge (e.g. secrets manager injection via environment variable), you can add a `devices:` block with just `id`, `username`, and `password`. See `connector.yaml.example` for the format. Most deployments do not need this.
+> **Credential override (advanced):** If you need to keep credentials local rather than storing them in CertForge — for example, injecting passwords from a secrets manager via environment variables — add a `devices:` block. List one entry per device with the CertForge device UUID, username, and password. All other device details (host, port, type, TLS context) still come from CertForge automatically.
+>
+> ```yaml
+> devices:
+>   - id: "00000000-0000-0000-0000-000000000000"  # UUID from CertForge → Network Devices
+>     username: admin
+>     password: $SBC1_PASSWORD
+>   - id: "11111111-1111-1111-1111-111111111111"
+>     username: admin
+>     password: $SBC2_PASSWORD
+>   - id: "22222222-2222-2222-2222-222222222222"
+>     username: readonly
+>     password: $F5_PASSWORD
+> ```
+>
+> Most deployments do not need this — store credentials in CertForge and let the connector receive them with each job.
 
 ### Private CA — local signing
 

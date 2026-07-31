@@ -24,14 +24,22 @@ poll_interval: 30s
 # so the Device Type dropdown in the UI is always populated automatically.
 #
 # CREDENTIAL OVERRIDE (advanced, most deployments omit this):
-# If you need to keep credentials local rather than storing them in CertForge,
-# add a devices: block with just id + username + password.  The connector will
-# use these credentials for any job for that device ID and ignore the rest.
+# If you need to keep credentials local rather than storing them in CertForge —
+# e.g. injecting passwords from a secrets manager via environment variables —
+# list one entry per device with its CertForge UUID, username, and password.
+# All other device details (host, port, type, TLS context) still come from
+# CertForge automatically with each renewal job.
 #
 # devices:
-#   - id: "00000000-0000-0000-0000-000000000000"  # CertForge device UUID
+#   - id: "00000000-0000-0000-0000-000000000000"  # UUID from CertForge → Network Devices
 #     username: admin
-#     password: $SBC_PASSWORD
+#     password: $SBC1_PASSWORD
+#   - id: "11111111-1111-1111-1111-111111111111"
+#     username: admin
+#     password: $SBC2_PASSWORD
+#   - id: "22222222-2222-2222-2222-222222222222"
+#     username: readonly
+#     password: $F5_PASSWORD
 
 # Private CA (optional) — sign device CSRs with your on-prem CA instead of
 # sending them to CertForge for signing.  Before using this, create a
