@@ -12,7 +12,7 @@ import (
 
 // Config is loaded from connector.yaml (or the path given via -config flag).
 type Config struct {
-	CertForgeURL string        `yaml:"certforge_url"` // e.g. https://cloak.certgovernance.app
+	CertForgeURL string        `yaml:"certforge_url"` // e.g. https://app.certgovernance.app
 	APIKey       string        `yaml:"api_key"`       // cc_... bearer token from CertForge Settings
 	PollInterval time.Duration `yaml:"poll_interval"` // default 30s
 	Devices      []DeviceConfig `yaml:"devices"`

@@ -7,7 +7,7 @@
 # Example (Docker):  pass -e CERTFORGE_API_KEY=... or use an env_file in compose.
 
 # URL of your CertForge instance.
-certforge_url: https://cloak.certgovernance.app
+certforge_url: https://app.certgovernance.app
 
 # Connector token from CertForge → Settings → API Keys → Connector Tokens.
 # Always load from an environment variable — never paste the token directly here.

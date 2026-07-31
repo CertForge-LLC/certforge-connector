@@ -1,6 +1,6 @@
 # certforge-connector
 
-An open-source on-premises agent that automates certificate renewal for network devices managed by [CertForge](https://cloak.certgovernance.app).
+An open-source on-premises agent that automates certificate renewal for network devices managed by [CertForge](https://app.certgovernance.app).
 
 ## Why this exists
 
@@ -172,7 +172,7 @@ Copy `connector.yaml.example` to `connector.yaml` and fill in your values.
 
 ```yaml
 # URL of your CertForge instance.
-certforge_url: https://cloak.certgovernance.app
+certforge_url: https://app.certgovernance.app
 
 # Connector token from CertForge → Settings → API Keys → Connector Tokens.
 # Always load from an environment variable — never paste the token directly here.
