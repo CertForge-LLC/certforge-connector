@@ -110,7 +110,7 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 	if j.Status == "pending_query" {
 		log.Printf("[connector] job %s: querying cert on %s (%s:%d)", j.ID, j.DeviceName, j.Host, j.Port)
 		w.reportOneCert(j.DeviceID, j.Host, j.Port, j.SkipVerify)
-		if err := w.client.MarkDone(j.ID); err != nil {
+		if err := w.client.MarkDone(j.ID, ""); err != nil {
 			log.Printf("[connector] job %s: mark done failed: %v", j.ID, err)
 		}
 		return nil
@@ -185,7 +185,12 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 		}
 	}
 
-	if err := w.client.MarkDone(j.ID); err != nil {
+	// Send the locally-signed cert so CertForge can store it for inventory.
+	certForDone := ""
+	if w.localCA != nil {
+		certForDone = certPEM
+	}
+	if err := w.client.MarkDone(j.ID, certForDone); err != nil {
 		log.Printf("[connector] job %s: mark done failed (cert is installed): %v", j.ID, err)
 	}
 	log.Printf("[connector] job %s: complete — cert installed on %s", j.ID, j.DeviceName)

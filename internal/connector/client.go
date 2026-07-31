@@ -91,8 +91,14 @@ func (c *Client) SubmitCSR(jobID, csrPEM string) (*Job, error) {
 }
 
 // MarkDone tells CertForge the certificate was successfully installed.
-func (c *Client) MarkDone(jobID string) error {
-	return c.post("/api/v1/connector/jobs/"+jobID+"/done", nil, nil)
+// certPEM is optional: when non-empty (local CA signing path), CertForge stores
+// the cert for inventory and fires the cert_signed audit event.
+func (c *Client) MarkDone(jobID, certPEM string) error {
+	var body []byte
+	if certPEM != "" {
+		body, _ = json.Marshal(map[string]string{"certificate": certPEM})
+	}
+	return c.post("/api/v1/connector/jobs/"+jobID+"/done", body, nil)
 }
 
 // ReportCert tells CertForge the current certificate expiry, CN, and SANs from
