@@ -234,7 +234,12 @@ func parseCertPEM(certPEM string) (CertInfo, error) {
 }
 
 // SignCSR signs a PEM-encoded CSR and returns a PEM-encoded certificate.
-func (ca *LocalCA) SignCSR(csrPEM string) (string, error) {
+// SignCSR signs the given CSR PEM with this CA.
+// validityDays overrides the configured default when > 0; 0 uses the config value.
+func (ca *LocalCA) SignCSR(csrPEM string, validityDays int) (string, error) {
+	if validityDays <= 0 {
+		validityDays = ca.validDays
+	}
 	block, _ := pem.Decode([]byte(csrPEM))
 	if block == nil {
 		return "", fmt.Errorf("local CA: no PEM block found in CSR")
@@ -257,7 +262,7 @@ func (ca *LocalCA) SignCSR(csrPEM string) (string, error) {
 		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: csr.Subject.CommonName, Organization: csr.Subject.Organization},
 		NotBefore:    now.Add(-1 * time.Minute), // small back-date to handle clock skew
-		NotAfter:     now.Add(time.Duration(ca.validDays) * 24 * time.Hour),
+		NotAfter:     now.Add(time.Duration(validityDays) * 24 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		DNSNames:     csr.DNSNames,

@@ -153,6 +153,46 @@ func (c *Client) PushInventory(connectorID string, certs []InventoryCert) (int, 
 	return result.Count, nil
 }
 
+// LocalSignAuth is the response from CertForge's authorize-local-signing endpoint.
+type LocalSignAuth struct {
+	Approved      bool   `json:"approved"`
+	Reason        string `json:"reason,omitempty"`        // set when approved=false
+	CAConnectorID string `json:"ca_connector_id,omitempty"` // which local CA to sign with
+	ValidityDays  int    `json:"validity_days,omitempty"`
+	DTPID         string `json:"dtp_id,omitempty"`
+}
+
+// AuthorizeLocalSigning calls CertForge to validate that the job's domain is covered
+// by a DTP pointing to a private_connector CA, enforces policy, and records the
+// approval server-side. The connector must call this before signing locally.
+// Fail-closed: if this returns an error or Approved==false, do not sign.
+func (c *Client) AuthorizeLocalSigning(jobID, cn string, sans []string, keyAlgorithm string, keyBits int) (*LocalSignAuth, error) {
+	body, _ := json.Marshal(map[string]any{
+		"cn":            cn,
+		"sans":          sans,
+		"key_algorithm": keyAlgorithm,
+		"key_bits":      keyBits,
+	})
+	var result LocalSignAuth
+	// A 422 (denied) is a valid JSON response, not a transport error — decode it.
+	req, err := http.NewRequest(http.MethodPost, c.baseURL+"/api/v1/connector/jobs/"+jobID+"/authorize-local-signing", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("authorize-local-signing: %w", err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err := json.Unmarshal(b, &result); err != nil {
+		return nil, fmt.Errorf("authorize-local-signing: decode response: %w", err)
+	}
+	return &result, nil
+}
+
 // ReportCert tells CertForge the current certificate expiry, CN, and SANs from
 // a device's live TLS cert. CertForge uses this for baseline visibility and DTP matching.
 func (c *Client) ReportCert(deviceID string, info CertInfo) error {

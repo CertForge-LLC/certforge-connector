@@ -2,6 +2,10 @@ package connector
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"log"
 	"time"
@@ -11,21 +15,42 @@ import (
 type Worker struct {
 	cfg      *Config
 	client   *Client
-	localCA  *LocalCA // non-nil when private_ca is configured
+	// localCAs maps ca_connector_id → LocalCA for governed local signing (DTP-validated).
+	// Populated from private_cas[] entries (and private_ca if it has a ca_connector_id).
+	localCAs map[string]*LocalCA
+	// legacyCA is set when private_ca has no ca_connector_id (pre-governance behavior).
+	// Signing still works but bypasses DTP validation — a warning is logged each use.
+	legacyCA *LocalCA
 }
 
 func NewWorker(cfg *Config) (*Worker, error) {
 	w := &Worker{
-		cfg:    cfg,
-		client: NewClient(cfg.CertForgeURL, cfg.APIKey),
+		cfg:      cfg,
+		client:   NewClient(cfg.CertForgeURL, cfg.APIKey),
+		localCAs: make(map[string]*LocalCA),
 	}
+
+	// Collect all private CA configs: private_cas[] + private_ca (backward compat).
+	allCAs := append([]PrivateCAConfig{}, cfg.PrivateCAs...)
 	if cfg.PrivateCA != nil {
-		ca, err := LoadLocalCA(*cfg.PrivateCA)
+		allCAs = append(allCAs, *cfg.PrivateCA)
+	}
+
+	for _, caCfg := range allCAs {
+		if caCfg.CertFile == "" || caCfg.KeyFile == "" {
+			continue
+		}
+		ca, err := LoadLocalCA(caCfg)
 		if err != nil {
 			return nil, err
 		}
-		w.localCA = ca
-		log.Printf("[connector] private CA loaded from %s (validity %d days)", cfg.PrivateCA.CertFile, ca.validDays)
+		if caCfg.CAConnectorID != "" {
+			w.localCAs[caCfg.CAConnectorID] = ca
+			log.Printf("[connector] private CA loaded: ca_connector_id=%s cert=%s validity=%dd (governed)", caCfg.CAConnectorID, caCfg.CertFile, ca.validDays)
+		} else {
+			w.legacyCA = ca
+			log.Printf("[connector] private CA loaded: cert=%s validity=%dd (WARNING: no ca_connector_id — signing without DTP governance; add ca_connector_id to enable governance)", caCfg.CertFile, ca.validDays)
+		}
 	}
 	return w, nil
 }
@@ -219,12 +244,13 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 		return fmt.Errorf("pull CSR: %w", err)
 	}
 
+	usingLocalCA := len(w.localCAs) > 0 || w.legacyCA != nil
 	var certPEM string
-	if w.localCA != nil {
-		log.Printf("[connector] job %s: signing CSR with local CA", j.ID)
-		certPEM, err = w.localCA.SignCSR(csrPEM)
+
+	if usingLocalCA {
+		certPEM, err = w.signLocally(ctx, j.ID, csrPEM)
 		if err != nil {
-			return fmt.Errorf("local CA sign: %w", err)
+			return err
 		}
 	} else {
 		log.Printf("[connector] job %s: submitting CSR to CertForge", j.ID)
@@ -245,7 +271,7 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 
 	// When using a local CA, report the installed cert back to CertForge
 	// so inventory and expiry tracking stay current.
-	if w.localCA != nil {
+	if usingLocalCA {
 		if info, parseErr := parseCertPEM(certPEM); parseErr == nil {
 			if repErr := w.client.ReportCert(j.DeviceID, info); repErr != nil {
 				log.Printf("[connector] job %s: report cert to CertForge: %v", j.ID, repErr)
@@ -253,9 +279,8 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 		}
 	}
 
-	// Send the locally-signed cert so CertForge can store it for inventory.
 	certForDone := ""
-	if w.localCA != nil {
+	if usingLocalCA {
 		certForDone = certPEM
 	}
 	if err := w.client.MarkDone(j.ID, certForDone); err != nil {
@@ -263,4 +288,59 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 	}
 	log.Printf("[connector] job %s: complete — cert installed on %s", j.ID, j.DeviceName)
 	return nil
+}
+
+// signLocally handles DTP-governed local signing.
+// For governed CAs (ca_connector_id set): calls authorize-local-signing first (fail-closed).
+// For legacy CAs (no ca_connector_id): signs directly with a warning.
+func (w *Worker) signLocally(ctx context.Context, jobID, csrPEM string) (string, error) {
+	// Try governed path first.
+	if len(w.localCAs) > 0 {
+		cn, sans, keyAlgo, keyBits := csrMeta(csrPEM)
+		log.Printf("[connector] job %s: requesting DTP authorization for local signing (cn=%s)", jobID, cn)
+
+		auth, err := w.client.AuthorizeLocalSigning(jobID, cn, sans, keyAlgo, keyBits)
+		if err != nil {
+			return "", fmt.Errorf("governance check failed (fail-closed — cert not signed): %w", err)
+		}
+		if !auth.Approved {
+			return "", fmt.Errorf("local signing denied by CertForge: %s", auth.Reason)
+		}
+
+		localCA, ok := w.localCAs[auth.CAConnectorID]
+		if !ok {
+			return "", fmt.Errorf("CertForge authorized ca_connector_id=%s but no local CA with that ID is configured — add it to private_cas in connector.yaml", auth.CAConnectorID)
+		}
+
+		log.Printf("[connector] job %s: signing with governed local CA ca_connector_id=%s validity=%dd dtp=%s", jobID, auth.CAConnectorID, auth.ValidityDays, auth.DTPID)
+		return localCA.SignCSR(csrPEM, auth.ValidityDays)
+	}
+
+	// Legacy path: no ca_connector_id — sign without governance.
+	log.Printf("[connector] WARNING job %s: signing with ungoverned local CA — add ca_connector_id to private_ca to enable DTP governance", jobID)
+	return w.legacyCA.SignCSR(csrPEM, 0)
+}
+
+// csrMeta extracts CN, SANs, key algorithm and key size from a CSR PEM for the
+// authorize-local-signing call. Returns empty strings on parse failure (server will reject).
+func csrMeta(csrPEM string) (cn string, sans []string, keyAlgo string, keyBits int) {
+	block, _ := pem.Decode([]byte(csrPEM))
+	if block == nil {
+		return
+	}
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		return
+	}
+	cn = csr.Subject.CommonName
+	sans = csr.DNSNames
+	switch pub := csr.PublicKey.(type) {
+	case *rsa.PublicKey:
+		keyAlgo = "rsa"
+		keyBits = pub.N.BitLen()
+	case *ecdsa.PublicKey:
+		keyAlgo = "ecdsa"
+		keyBits = pub.Params().BitSize
+	}
+	return
 }
