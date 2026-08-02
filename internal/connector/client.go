@@ -193,6 +193,30 @@ func (c *Client) AuthorizeLocalSigning(jobID, cn string, sans []string, keyAlgor
 	return &result, nil
 }
 
+// SignRequest is a pending approval-flow signing request returned by CertForge.
+// The connector generates a cert by signing the CSR with its local CA, then calls SubmitSignRequest.
+type SignRequest struct {
+	ID      string `json:"id"`
+	Domains string `json:"domains"`
+	CSRPEM  string `json:"csr_pem"`
+}
+
+// GetSignRequests returns pending CSR signing requests for the given CA connector.
+// These originate from the CertForge approval flow when a Trust Profile uses a private_connector CA.
+func (c *Client) GetSignRequests(connectorID string) ([]SignRequest, error) {
+	var out []SignRequest
+	if err := c.get("/api/v1/connector/ca-connectors/"+connectorID+"/sign-requests", &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// SubmitSignRequest posts the signed certificate PEM back to CertForge, completing the approval.
+func (c *Client) SubmitSignRequest(connectorID, reqID, certPEM string) error {
+	body, _ := json.Marshal(map[string]string{"cert_pem": certPEM})
+	return c.post("/api/v1/connector/ca-connectors/"+connectorID+"/sign-requests/"+reqID+"/submit", body, nil)
+}
+
 // RegisterCapabilities tells CertForge which device driver types this connector supports.
 // Called on startup and periodically; CertForge uses the list to populate the device-type
 // dropdown in the UI so users never have to type a type name by hand.

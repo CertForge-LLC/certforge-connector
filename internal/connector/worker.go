@@ -15,6 +15,7 @@ import (
 type Worker struct {
 	cfg      *Config
 	client   *Client
+	version  string
 	// localCAs maps ca_connector_id → LocalCA for governed local signing (DTP-validated).
 	// Populated from private_cas[] entries (and private_ca if it has a ca_connector_id).
 	localCAs map[string]*LocalCA
@@ -23,10 +24,11 @@ type Worker struct {
 	legacyCA *LocalCA
 }
 
-func NewWorker(cfg *Config) (*Worker, error) {
+func NewWorker(cfg *Config, version string) (*Worker, error) {
 	w := &Worker{
 		cfg:      cfg,
 		client:   NewClient(cfg.CertForgeURL, cfg.APIKey),
+		version:  version,
 		localCAs: make(map[string]*LocalCA),
 	}
 
@@ -60,7 +62,7 @@ const inventorySyncInterval = 6 * time.Hour
 
 // Run polls in a loop until ctx is cancelled.
 func (w *Worker) Run(ctx context.Context) {
-	log.Printf("[connector] starting — polling %s every %s", w.cfg.CertForgeURL, w.cfg.PollInterval)
+	log.Printf("[connector] starting %s — polling %s every %s", w.version, w.cfg.CertForgeURL, w.cfg.PollInterval)
 
 	jobTicker := time.NewTicker(w.cfg.PollInterval)
 	certTicker := time.NewTicker(certReportInterval)
@@ -71,6 +73,7 @@ func (w *Worker) Run(ctx context.Context) {
 
 	// Baseline work on startup.
 	w.poll(ctx)
+	w.pollSignRequests()
 	w.reportCurrentCerts(ctx)
 	w.syncInventory(ctx)
 	w.registerCapabilities()
@@ -82,6 +85,7 @@ func (w *Worker) Run(ctx context.Context) {
 			return
 		case <-jobTicker.C:
 			w.poll(ctx)
+			w.pollSignRequests()
 		case <-certTicker.C:
 			w.reportCurrentCerts(ctx)
 		case <-inventoryTicker.C:
@@ -326,6 +330,32 @@ func (w *Worker) signLocally(ctx context.Context, jobID, csrPEM string) (string,
 	// Legacy path: no ca_connector_id — sign without governance.
 	log.Printf("[connector] WARNING job %s: signing with ungoverned local CA — add ca_connector_id to private_ca to enable DTP governance", jobID)
 	return w.legacyCA.SignCSR(csrPEM, 0)
+}
+
+// pollSignRequests checks each configured private CA for pending approval-flow signing
+// requests (created when the CertForge server processes an approval for a private_connector CA).
+// For each request, the connector signs the CSR with the appropriate local CA and posts the cert back.
+func (w *Worker) pollSignRequests() {
+	for connID, ca := range w.localCAs {
+		reqs, err := w.client.GetSignRequests(connID)
+		if err != nil {
+			log.Printf("[connector] sign-requests %s: %v", connID, err)
+			continue
+		}
+		for _, req := range reqs {
+			log.Printf("[connector] sign-request %s: signing for %s", req.ID, req.Domains)
+			certPEM, err := ca.SignCSR(req.CSRPEM, ca.validDays)
+			if err != nil {
+				log.Printf("[connector] sign-request %s: sign CSR: %v", req.ID, err)
+				continue
+			}
+			if err := w.client.SubmitSignRequest(connID, req.ID, certPEM); err != nil {
+				log.Printf("[connector] sign-request %s: submit: %v", req.ID, err)
+				continue
+			}
+			log.Printf("[connector] sign-request %s: complete (%s)", req.ID, req.Domains)
+		}
+	}
 }
 
 // csrMeta extracts CN, SANs, key algorithm and key size from a CSR PEM for the
