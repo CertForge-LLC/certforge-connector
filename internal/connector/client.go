@@ -3,11 +3,44 @@ package connector
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"time"
 )
+
+// ErrConnectorDisabled is returned when CertForge reports the connector is disabled.
+// The worker backs off and retries periodically until re-enabled.
+type ErrConnectorDisabled struct {
+	Msg string
+}
+
+func (e ErrConnectorDisabled) Error() string { return e.Msg }
+
+// parseRespError reads the response body once, detects connector_disabled errors,
+// and returns the appropriate error type.
+func parseRespError(callDesc string, resp *http.Response) error {
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	var e struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	msg := resp.Status
+	if json.Unmarshal(b, &e) == nil && e.Error != "" {
+		msg = resp.Status + ": " + e.Error
+	}
+	if e.Code == "connector_disabled" {
+		return ErrConnectorDisabled{Msg: callDesc + ": " + msg}
+	}
+	return fmt.Errorf("%s: %s", callDesc, msg)
+}
+
+// isConnectorDisabled is a convenience check for errors returned by client methods.
+func isConnectorDisabled(err error) bool {
+	var d ErrConnectorDisabled
+	return errors.As(err, &d)
+}
 
 // Job is a pending renewal job returned by the CertForge connector API.
 // All device connection details are included — no yaml device list needed.
@@ -264,7 +297,7 @@ func (c *Client) get(path string, out any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s: %s", path, apiErrorMsg(resp))
+		return parseRespError("GET "+path, resp)
 	}
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
@@ -291,23 +324,10 @@ func (c *Client) post(path string, body []byte, out any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("POST %s: %s", path, apiErrorMsg(resp))
+		return parseRespError("POST "+path, resp)
 	}
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
 	}
 	return nil
-}
-
-// apiErrorMsg extracts a human-readable message from a non-200 response.
-// Prefers the "error" field from a JSON body; falls back to the HTTP status line.
-func apiErrorMsg(resp *http.Response) string {
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-	var e struct {
-		Error string `json:"error"`
-	}
-	if json.Unmarshal(b, &e) == nil && e.Error != "" {
-		return resp.Status + ": " + e.Error
-	}
-	return resp.Status
 }

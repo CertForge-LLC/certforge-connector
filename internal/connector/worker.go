@@ -28,6 +28,9 @@ type Worker struct {
 	// legacyCA is set when private_ca has no ca_connector_id (pre-governance behavior).
 	// Signing still works but bypasses DTP validation - a warning is logged each use.
 	legacyCA *LocalCA
+	// disabled is true when CertForge reports this connector is disabled.
+	// All polling is suppressed until registerCapabilities succeeds again.
+	disabled bool
 }
 
 func NewWorker(cfg *Config, version string) (*Worker, error) {
@@ -65,6 +68,7 @@ func NewWorker(cfg *Config, version string) (*Worker, error) {
 
 const certReportInterval = 6 * time.Hour
 const inventorySyncInterval = 6 * time.Hour
+const capsCheckInterval = 5 * time.Minute
 
 // Run polls in a loop until ctx is cancelled.
 func (w *Worker) Run(ctx context.Context) {
@@ -73,16 +77,18 @@ func (w *Worker) Run(ctx context.Context) {
 	jobTicker := time.NewTicker(w.cfg.PollInterval)
 	certTicker := time.NewTicker(certReportInterval)
 	inventoryTicker := time.NewTicker(inventorySyncInterval)
+	capsTicker := time.NewTicker(capsCheckInterval)
 	defer jobTicker.Stop()
 	defer certTicker.Stop()
 	defer inventoryTicker.Stop()
+	defer capsTicker.Stop()
 
-	// Baseline work on startup.
+	// Check capabilities first so disabled state is known before any polling.
+	w.registerCapabilities()
 	w.poll(ctx)
 	w.pollSignRequests()
 	w.reportCurrentCerts(ctx)
 	w.syncInventory(ctx)
-	w.registerCapabilities()
 
 	for {
 		select {
@@ -96,6 +102,14 @@ func (w *Worker) Run(ctx context.Context) {
 			w.reportCurrentCerts(ctx)
 		case <-inventoryTicker.C:
 			w.syncInventory(ctx)
+		case <-capsTicker.C:
+			wasDisabled := w.disabled
+			w.registerCapabilities()
+			if wasDisabled && !w.disabled {
+				// Just re-enabled — poll immediately instead of waiting for the next tick.
+				w.poll(ctx)
+				w.pollSignRequests()
+			}
 		}
 	}
 }
@@ -124,8 +138,21 @@ func (w *Worker) registerCapabilities() {
 		}
 	}
 
-	if err := w.client.RegisterCapabilities(SupportedDeviceTypes(), ids, backendVersions); err != nil {
+	err := w.client.RegisterCapabilities(SupportedDeviceTypes(), ids, backendVersions)
+	if err != nil {
+		if isConnectorDisabled(err) {
+			if !w.disabled {
+				log.Printf("[connector] connector is disabled in CertForge - standing by until re-enabled")
+				w.disabled = true
+			}
+			return
+		}
 		log.Printf("[connector] register capabilities: %v", err)
+		return
+	}
+	if w.disabled {
+		log.Printf("[connector] connector is now enabled - resuming normal operation")
+		w.disabled = false
 	}
 }
 
@@ -155,6 +182,9 @@ func queryVaultVersion(addr string) (string, error) {
 // syncInventory pushes the full cert inventory of the local CA to CertForge.
 // Does nothing when ca_connector_id is not configured or no inventory source is set.
 func (w *Worker) syncInventory(ctx context.Context) {
+	if w.disabled {
+		return
+	}
 	ca := w.cfg.PrivateCA
 	if ca == nil || ca.CAConnectorID == "" {
 		return
@@ -218,6 +248,9 @@ func (w *Worker) syncInventory(ctx context.Context) {
 // and reports expiry, CN, and SANs back. Falls back to the yaml device list
 // if the CertForge API call fails.
 func (w *Worker) reportCurrentCerts(ctx context.Context) {
+	if w.disabled {
+		return
+	}
 	devices, err := w.client.GetDevices()
 	if err != nil {
 		log.Printf("[connector] fetch device list: %v - falling back to yaml", err)
@@ -249,6 +282,9 @@ func (w *Worker) reportOneCert(deviceID, host string, port int, skipVerify bool)
 }
 
 func (w *Worker) poll(ctx context.Context) {
+	if w.disabled {
+		return
+	}
 	jobs, err := w.client.PollJobs()
 	if err != nil {
 		log.Printf("[connector] poll error: %v", err)
@@ -398,6 +434,9 @@ func (w *Worker) signLocally(ctx context.Context, jobID, csrPEM string) (string,
 // requests (created when the CertForge server processes an approval for a private_connector CA).
 // For each request, the connector signs the CSR with the appropriate local CA and posts the cert back.
 func (w *Worker) pollSignRequests() {
+	if w.disabled {
+		return
+	}
 	for connID, ca := range w.localCAs {
 		reqs, err := w.client.GetSignRequests(connID)
 		if err != nil {
