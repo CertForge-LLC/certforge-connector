@@ -87,6 +87,7 @@ func (w *Worker) Run(ctx context.Context) {
 	w.registerCapabilities()
 	w.poll(ctx)
 	w.pollSignRequests()
+	w.reportDeviceVersions(ctx)
 	w.reportCurrentCerts(ctx)
 	w.syncInventory(ctx)
 
@@ -244,6 +245,65 @@ func (w *Worker) syncInventory(ctx context.Context) {
 		return
 	}
 	log.Printf("[connector] inventory sync: accepted %d/%d certs", count, len(certs))
+}
+
+// reportDeviceVersions queries the firmware/software version from every device
+// that supports it (device.Versioned). Called at startup as a quick connectivity
+// heartbeat — surfaces version info and catches misconfigured device credentials early.
+func (w *Worker) reportDeviceVersions(ctx context.Context) {
+	if w.disabled {
+		return
+	}
+	devices, err := w.client.GetDevices()
+	if err != nil {
+		log.Printf("[connector] device version check: fetch devices: %v", err)
+		return
+	}
+	for _, d := range devices {
+		if d.Status == "inactive" {
+			continue
+		}
+		cfg := DeviceConfig{
+			ID:         d.ID,
+			Type:       d.Type,
+			Host:       d.Host,
+			Port:       d.Port,
+			TLSContext: d.TLSContext,
+			SkipVerify: d.SkipVerify,
+			Username:   d.Username,
+			Password:   d.Password,
+		}
+		// YAML credentials act as a fallback if CertForge didn't return them.
+		if yamlDev := w.cfg.DeviceByID(d.ID); yamlDev != nil {
+			if cfg.Username == "" {
+				cfg.Username = yamlDev.Username
+			}
+			if cfg.Password == "" {
+				cfg.Password = yamlDev.Password
+			}
+		}
+		if cfg.Username == "" && cfg.Password == "" {
+			continue // no credentials available; skip version check
+		}
+		drv, err := cfg.NewDevice()
+		if err != nil {
+			log.Printf("[connector] device %s (%s): init driver: %v", d.ID, d.Host, err)
+			continue
+		}
+		v, ok := drv.(device.Versioned)
+		if !ok {
+			continue // driver doesn't expose firmware version
+		}
+		ver, err := v.SoftwareVersion(ctx)
+		if err != nil {
+			log.Printf("[connector] device %s (%s): version check failed: %v", d.ID, d.Host, err)
+			continue
+		}
+		log.Printf("[connector] device %s (%s): software version %s", d.ID, d.Host, ver)
+		if repErr := w.client.ReportDeviceInfo(d.ID, ver); repErr != nil {
+			log.Printf("[connector] device %s: report version: %v", d.ID, repErr)
+		}
+	}
 }
 
 // reportCurrentCerts reads the live TLS cert from every device in CertForge

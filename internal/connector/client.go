@@ -60,7 +60,6 @@ type Job struct {
 }
 
 // RemoteDevice is a device entry returned by the CertForge connector devices API.
-// Used for background cert reads; no credentials included.
 type RemoteDevice struct {
 	ID         string `json:"id"`
 	Type       string `json:"type"`
@@ -68,7 +67,9 @@ type RemoteDevice struct {
 	Port       int    `json:"port"`
 	TLSContext int    `json:"tls_context"`
 	SkipVerify bool   `json:"skip_verify"`
-	Status     string `json:"status"` // "active" | "inactive"
+	Status     string `json:"status"`   // "active" | "inactive"
+	Username   string `json:"username,omitempty"`
+	Password   string `json:"password,omitempty"`
 }
 
 // Client talks to the CertForge connector REST API.
