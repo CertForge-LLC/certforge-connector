@@ -91,7 +91,7 @@ func (d *DeviceConfig) NewDevice() (device.Device, error) {
 			SkipVerify: d.SkipVerify,
 		}, nil
 	default:
-		return nil, fmt.Errorf("unknown device type %q — supported: audiocodes, f5", d.Type)
+		return nil, fmt.Errorf("unknown device type %q - supported: audiocodes, f5", d.Type)
 	}
 }
 

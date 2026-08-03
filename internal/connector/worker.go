@@ -20,7 +20,7 @@ type Worker struct {
 	// Populated from private_cas[] entries (and private_ca if it has a ca_connector_id).
 	localCAs map[string]*LocalCA
 	// legacyCA is set when private_ca has no ca_connector_id (pre-governance behavior).
-	// Signing still works but bypasses DTP validation — a warning is logged each use.
+	// Signing still works but bypasses DTP validation - a warning is logged each use.
 	legacyCA *LocalCA
 }
 
@@ -51,7 +51,7 @@ func NewWorker(cfg *Config, version string) (*Worker, error) {
 			log.Printf("[connector] private CA loaded: ca_connector_id=%s cert=%s validity=%dd (governed)", caCfg.CAConnectorID, caCfg.CertFile, ca.validDays)
 		} else {
 			w.legacyCA = ca
-			log.Printf("[connector] private CA loaded: cert=%s validity=%dd (WARNING: no ca_connector_id — signing without DTP governance; add ca_connector_id to enable governance)", caCfg.CertFile, ca.validDays)
+			log.Printf("[connector] private CA loaded: cert=%s validity=%dd (WARNING: no ca_connector_id - signing without DTP governance; add ca_connector_id to enable governance)", caCfg.CertFile, ca.validDays)
 		}
 	}
 	return w, nil
@@ -62,7 +62,7 @@ const inventorySyncInterval = 6 * time.Hour
 
 // Run polls in a loop until ctx is cancelled.
 func (w *Worker) Run(ctx context.Context) {
-	log.Printf("[connector] starting %s — polling %s every %s", w.version, w.cfg.CertForgeURL, w.cfg.PollInterval)
+	log.Printf("[connector] starting %s - polling %s every %s", w.version, w.cfg.CertForgeURL, w.cfg.PollInterval)
 
 	jobTicker := time.NewTicker(w.cfg.PollInterval)
 	certTicker := time.NewTicker(certReportInterval)
@@ -95,7 +95,16 @@ func (w *Worker) Run(ctx context.Context) {
 }
 
 func (w *Worker) registerCapabilities() {
-	if err := w.client.RegisterCapabilities(SupportedDeviceTypes(), w.cfg.ConnectorID); err != nil {
+	// Collect all CA connector IDs: private_ca/private_cas entries + optional top-level connector_id.
+	// The server checks each one and returns 403 if any are disabled.
+	var ids []string
+	for connID := range w.localCAs {
+		ids = append(ids, connID)
+	}
+	if w.cfg.ConnectorID != "" {
+		ids = append(ids, w.cfg.ConnectorID)
+	}
+	if err := w.client.RegisterCapabilities(SupportedDeviceTypes(), ids); err != nil {
 		log.Printf("[connector] register capabilities: %v", err)
 	}
 }
@@ -144,7 +153,7 @@ func (w *Worker) syncInventory(ctx context.Context) {
 			revokedSerials, err = ReadRevokedSerials(ca.CRLFile)
 			if err != nil {
 				log.Printf("[connector] inventory sync: read CRL: %v", err)
-				// Non-fatal — continue without revocation filtering.
+				// Non-fatal - continue without revocation filtering.
 			}
 		}
 		certs, err = ScanIssuedCerts(ca.IssuedCertsDir, scope, revokedSerials)
@@ -168,7 +177,7 @@ func (w *Worker) syncInventory(ctx context.Context) {
 func (w *Worker) reportCurrentCerts(ctx context.Context) {
 	devices, err := w.client.GetDevices()
 	if err != nil {
-		log.Printf("[connector] fetch device list: %v — falling back to yaml", err)
+		log.Printf("[connector] fetch device list: %v - falling back to yaml", err)
 		// Fall back to yaml device list.
 		for _, d := range w.cfg.Devices {
 			w.reportOneCert(d.ID, d.Host, d.Port, d.SkipVerify)
@@ -221,7 +230,7 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 	}
 
 	// All connection details and credentials come from CertForge via the job.
-	// The yaml device list is an optional override — prefer job data.
+	// The yaml device list is an optional override - prefer job data.
 	effective := DeviceConfig{
 		ID:         j.DeviceID,
 		Type:       j.DeviceType,
@@ -297,7 +306,7 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 	if err := w.client.MarkDone(j.ID, certForDone); err != nil {
 		log.Printf("[connector] job %s: mark done failed (cert is installed): %v", j.ID, err)
 	}
-	log.Printf("[connector] job %s: complete — cert installed on %s", j.ID, j.DeviceName)
+	log.Printf("[connector] job %s: complete - cert installed on %s", j.ID, j.DeviceName)
 	return nil
 }
 
@@ -312,7 +321,7 @@ func (w *Worker) signLocally(ctx context.Context, jobID, csrPEM string) (string,
 
 		auth, err := w.client.AuthorizeLocalSigning(jobID, cn, sans, keyAlgo, keyBits)
 		if err != nil {
-			return "", fmt.Errorf("governance check failed (fail-closed — cert not signed): %w", err)
+			return "", fmt.Errorf("governance check failed (fail-closed - cert not signed): %w", err)
 		}
 		if !auth.Approved {
 			return "", fmt.Errorf("local signing denied by CertForge: %s", auth.Reason)
@@ -320,15 +329,15 @@ func (w *Worker) signLocally(ctx context.Context, jobID, csrPEM string) (string,
 
 		localCA, ok := w.localCAs[auth.CAConnectorID]
 		if !ok {
-			return "", fmt.Errorf("CertForge authorized ca_connector_id=%s but no local CA with that ID is configured — add it to private_cas in connector.yaml", auth.CAConnectorID)
+			return "", fmt.Errorf("CertForge authorized ca_connector_id=%s but no local CA with that ID is configured - add it to private_cas in connector.yaml", auth.CAConnectorID)
 		}
 
 		log.Printf("[connector] job %s: signing with governed local CA ca_connector_id=%s validity=%dd dtp=%s", jobID, auth.CAConnectorID, auth.ValidityDays, auth.DTPID)
 		return localCA.SignCSR(csrPEM, auth.ValidityDays)
 	}
 
-	// Legacy path: no ca_connector_id — sign without governance.
-	log.Printf("[connector] WARNING job %s: signing with ungoverned local CA — add ca_connector_id to private_ca to enable DTP governance", jobID)
+	// Legacy path: no ca_connector_id - sign without governance.
+	log.Printf("[connector] WARNING job %s: signing with ungoverned local CA - add ca_connector_id to private_ca to enable DTP governance", jobID)
 	return w.legacyCA.SignCSR(csrPEM, 0)
 }
 

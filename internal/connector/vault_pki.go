@@ -22,7 +22,7 @@ func FetchVaultPKICerts(cfg VaultPKIConfig, scope ConnectorScope) ([]InventoryCe
 		token = os.Getenv("VAULT_TOKEN")
 	}
 	if token == "" {
-		return nil, fmt.Errorf("vault_pki: no token — set token in config or VAULT_TOKEN env var")
+		return nil, fmt.Errorf("vault_pki: no token - set token in config or VAULT_TOKEN env var")
 	}
 	mount := cfg.Mount
 	if mount == "" {
