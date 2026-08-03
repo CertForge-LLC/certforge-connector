@@ -289,6 +289,8 @@ func (w *Worker) reportDeviceVersions(ctx context.Context) {
 		if cfg.Username == "" && cfg.Password == "" {
 			continue // no credentials available; skip version check
 		}
+		log.Printf("[connector] device %s (%s): version check: username=%q password_len=%d skip_verify=%v",
+			d.ID, d.Host, cfg.Username, len(cfg.Password), cfg.SkipVerify)
 		drv, err := cfg.NewDevice()
 		if err != nil {
 			log.Printf("[connector] device %s (%s): init driver: %v", d.ID, d.Host, err)
