@@ -218,6 +218,7 @@ func (w *Worker) syncInventory(ctx context.Context) {
 		certs, err = FetchVaultPKICerts(*ca.VaultPKI, scope)
 		if err != nil {
 			log.Printf("[connector] inventory sync: vault-pki: %v", err)
+			_ = w.client.ReportSyncError(ca.CAConnectorID, "vault-pki: "+err.Error())
 			return
 		}
 	} else {
@@ -232,6 +233,7 @@ func (w *Worker) syncInventory(ctx context.Context) {
 		certs, err = ScanIssuedCerts(ca.IssuedCertsDir, scope, revokedSerials)
 		if err != nil {
 			log.Printf("[connector] inventory sync: scan %s: %v", ca.IssuedCertsDir, err)
+			_ = w.client.ReportSyncError(ca.CAConnectorID, "scan: "+err.Error())
 			return
 		}
 	}

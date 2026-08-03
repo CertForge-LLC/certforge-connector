@@ -187,6 +187,13 @@ func (c *Client) PushInventory(connectorID string, certs []InventoryCert) (int, 
 	return result.Count, nil
 }
 
+// ReportSyncError reports a backend failure to CertForge so the CA connector status
+// shows "error" rather than stale "ok". Used when Vault or cert directory is unreachable.
+func (c *Client) ReportSyncError(connectorID, errMsg string) error {
+	body, _ := json.Marshal(map[string]any{"sync_error": errMsg})
+	return c.post("/api/v1/connector/ca-connectors/"+connectorID+"/inventory", body, nil)
+}
+
 // LocalSignAuth is the response from CertForge's authorize-local-signing endpoint.
 type LocalSignAuth struct {
 	Approved      bool   `json:"approved"`
