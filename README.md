@@ -213,59 +213,91 @@ Device registration, connection details, and credentials are all managed in Cert
 >
 > Most deployments do not need this — store credentials in CertForge and let the connector receive them with each job.
 
-### Private CA — local signing
+### Private CA
 
-If your signing CA is on-prem and you do not want CSRs leaving the network, add a `private_ca` block. The connector signs device CSRs locally and notifies CertForge for audit purposes:
+The connector supports two independent private CA features that can be used together or separately:
+
+| Feature | What it does | Where it's configured |
+|---|---|---|
+| **Inventory sync** | Pushes all issued certs into CertForge Discovery as tracked | CertForge UI (vault config, scope) and/or YAML (filesystem paths) |
+| **Local signing** | Signs device CSRs on-prem without sending them to CertForge | YAML only (cert/key files must be local) |
+
+#### Step 1 — Create a CA connector record in CertForge
+
+Go to **Settings → CA Connectors → Add** and choose **"Private / Internal CA (On-Prem Agent)"**. This creates a CA record you can assign in an Issuance Profile and Domain Trust Policy.
+
+For **Vault PKI**: open the connector and click **Edit** to set the Vault address, token, mount path, and sync scope (domain filter, sync interval, date range). The agent downloads this config from CertForge at each sync — **no vault config in the YAML file is required**.
+
+Copy the connector ID shown under the connector name — you'll need it in YAML if you want local signing or file-based inventory.
+
+#### Vault PKI inventory sync (no YAML changes needed)
+
+Once vault config and scope are saved in the CertForge UI, the connector discovers them automatically. No `private_ca` block is needed in your YAML unless you also want local signing or need to inject the Vault token from a secrets manager.
+
+**Optional YAML override — inject vault token from a secrets manager:**
 
 ```yaml
 private_ca:
-  cert: /etc/certforge-connector/ca.crt   # PEM CA certificate
-  key:  /etc/certforge-connector/ca.key   # PEM CA private key (RSA or ECDSA)
-  validity_days: 365
+  ca_connector_id: 00000000-0000-0000-0000-000000000000  # from CertForge UI
+  vault_pki:
+    token: $VAULT_TOKEN   # addr and mount still come from CertForge UI
 ```
 
-### Private CA — inventory sync
+#### File-based CA inventory sync (OpenSSL, Easy-RSA, cfssl)
 
-To push the full inventory of certs your CA has issued into CertForge (so they appear in Discovery as tracked), first create a **CA connector** record in CertForge → Settings → CA Connectors → Add → "Private / Internal CA (On-Prem Agent)". Copy the connector ID shown under the connector name on that page.
-
-**Vault PKI and scope are configured in the CertForge UI.** Open the CA connector in Settings → CA Connectors → Edit to set the Vault address, token, mount path, and sync scope (domains, interval, date range). The agent downloads this config from the server at each sync — no vault config in YAML is required.
-
-**File-based CAs** (OpenSSL `openssl ca`, Easy-RSA, cfssl — anything that writes PEM files to a directory):
-
-Filesystem paths cannot be stored in CertForge, so they go in the YAML:
+Filesystem paths cannot be stored in CertForge, so they go in the YAML. Scope is still configured in the CertForge UI.
 
 ```yaml
 private_ca:
-  cert: /etc/certforge-connector/ca.crt
-  key:  /etc/certforge-connector/ca.key
   ca_connector_id: 00000000-0000-0000-0000-000000000000  # from CertForge UI
   issued_certs_dir: /etc/pki/CA/newcerts  # OpenSSL default; Easy-RSA: pki/issued/
   crl_file: /etc/pki/CA/crl.pem          # optional — revoked certs excluded from push
 ```
 
-**HashiCorp Vault PKI** (revocation read inline — no CRL file needed):
+#### Local signing
 
-Vault address, token, and mount path are configured in CertForge UI and delivered to the agent automatically. A minimal YAML is:
+If CSRs must not leave the network, add the CA cert and key to `private_ca`. The connector signs locally and calls CertForge to authorize every signing request against your Domain Trust Policy (fail-closed — if CertForge is unreachable, the connector does not sign).
 
 ```yaml
 private_ca:
-  cert: /etc/certforge-connector/ca.crt
-  key:  /etc/certforge-connector/ca.key
-  ca_connector_id: 00000000-0000-0000-0000-000000000000
+  cert: /etc/certforge-connector/ca.crt   # PEM CA certificate
+  key:  /etc/certforge-connector/ca.key   # PEM CA private key (RSA or ECDSA)
+  validity_days: 365                       # fallback validity; DTP policy takes precedence
+  ca_connector_id: 00000000-0000-0000-0000-000000000000  # from CertForge UI
 ```
 
-If you need to inject the Vault token from a secrets manager, override it in YAML (the YAML value takes precedence for that field only):
+#### Local signing + Vault PKI inventory sync combined
 
 ```yaml
 private_ca:
   cert: /etc/certforge-connector/ca.crt
   key:  /etc/certforge-connector/ca.key
+  validity_days: 365
   ca_connector_id: 00000000-0000-0000-0000-000000000000
+  # vault config (addr/mount/scope) comes from CertForge UI; token injected here
   vault_pki:
-    token: $VAULT_TOKEN   # inject secret via env var; addr and mount still come from CertForge UI
+    token: $VAULT_TOKEN
 ```
 
-The connector syncs inventory on startup and every 6 hours (or the interval configured in the CertForge UI). Scope (which domains, EKU, date range to include) is configured in CertForge on the CA connector record.
+#### Multiple CAs
+
+When managing several PKI mounts or issuance profiles from one connector, use `private_cas`:
+
+```yaml
+private_cas:
+  - ca_connector_id: 00000000-0000-0000-0000-000000000000
+    cert: /etc/ca/internal.crt
+    key:  /etc/ca/internal.key
+    # vault addr/mount/scope set in CertForge UI; inject token here
+    vault_pki:
+      token: $VAULT_TOKEN_INTERNAL
+  - ca_connector_id: 11111111-1111-1111-1111-111111111111
+    cert: /etc/ca/devices.crt
+    key:  /etc/ca/devices.key
+    issued_certs_dir: /etc/pki/devices/newcerts
+```
+
+The connector syncs inventory on startup and every 6 hours (or the interval configured in the CertForge UI).
 
 ### Environment variables
 
