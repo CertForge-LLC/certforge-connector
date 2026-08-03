@@ -273,13 +273,17 @@ func (w *Worker) reportDeviceVersions(ctx context.Context) {
 			Username:   d.Username,
 			Password:   d.Password,
 		}
-		// YAML credentials act as a fallback if CertForge didn't return them.
+		// YAML can supplement server-delivered config: credentials as fallback,
+		// and skip_verify as an OR (local admin can grant it even if server says false).
 		if yamlDev := w.cfg.DeviceByID(d.ID); yamlDev != nil {
 			if cfg.Username == "" {
 				cfg.Username = yamlDev.Username
 			}
 			if cfg.Password == "" {
 				cfg.Password = yamlDev.Password
+			}
+			if yamlDev.SkipVerify {
+				cfg.SkipVerify = true
 			}
 		}
 		if cfg.Username == "" && cfg.Password == "" {
