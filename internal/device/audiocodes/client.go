@@ -246,10 +246,10 @@ func (c *Client) InstallCert(ctx context.Context, certPEM string) error {
 	return nil
 }
 
-// SoftwareVersion returns the device firmware/software version string.
+// SoftwareVersion returns the device firmware version string from /api/v1/status.
 // Implements device.Versioned.
 func (c *Client) SoftwareVersion(ctx context.Context) (string, error) {
-	body, status, err := c.do(ctx, http.MethodGet, "/", nil, "")
+	body, status, err := c.do(ctx, http.MethodGet, "/status", nil, "")
 	if err != nil {
 		return "", err
 	}
@@ -257,12 +257,12 @@ func (c *Client) SoftwareVersion(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("audiocodes: SoftwareVersion: HTTP %d: %.200s", status, body)
 	}
 	var info struct {
-		SoftwareVersion string `json:"SoftwareVersion"`
+		VersionID string `json:"versionID"`
 	}
 	if err := json.Unmarshal(body, &info); err != nil {
 		return "", fmt.Errorf("audiocodes: SoftwareVersion: parse: %w", err)
 	}
-	return info.SoftwareVersion, nil
+	return info.VersionID, nil
 }
 
 // Ping verifies connectivity and credentials by fetching the TLS context list.
