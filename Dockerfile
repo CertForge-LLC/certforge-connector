@@ -9,4 +9,4 @@ FROM scratch
 COPY --from=builder /certforge-connector /certforge-connector
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 ENTRYPOINT ["/certforge-connector"]
-CMD ["-config", "/etc/certforge-connector/connector.yaml"]
+CMD ["-config", "/etc/certforge-connector/certforge-connector.yaml"]

@@ -16,7 +16,7 @@ import (
 var Version = "dev"
 
 func main() {
-	configPath := flag.String("config", "connector.yaml", "path to connector config file")
+	configPath := flag.String("config", "certforge-connector.yaml", "path to connector config file")
 	versionFlag := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 

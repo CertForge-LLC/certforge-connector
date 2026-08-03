@@ -1,5 +1,5 @@
 # CertForge connector configuration
-# Copy this file to connector.yaml and fill in your values.
+# Copy this file to certforge-connector.yaml and fill in your values.
 #
 # SECRETS: Do not put the API key directly in this file.
 # Reference an environment variable — the connector expands them at startup.

@@ -6,4 +6,4 @@ services:
     # management VLANs that are not reachable from the internet.
     network_mode: host
     volumes:
-      - ./connector.yaml:/etc/certforge-connector/connector.yaml:ro
+      - ./certforge-connector.yaml:/etc/certforge-connector/certforge-connector.yaml:ro

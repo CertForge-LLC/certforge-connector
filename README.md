@@ -61,7 +61,7 @@ export CERTFORGE_API_KEY=ct_...
 $env:CERTFORGE_API_KEY = "ct_..."
 ```
 
-Reference `$CERTFORGE_API_KEY` in `connector.yaml` rather than pasting the token directly into the file.
+Reference `$CERTFORGE_API_KEY` in `certforge-connector.yaml` rather than pasting the token directly into the file.
 
 ## Installation
 
@@ -84,7 +84,7 @@ chmod +x certforge-connector-linux-amd64
 mv certforge-connector-linux-amd64 /usr/local/bin/certforge-connector
 
 # Optional: download the example config to use as a starting point
-curl -LO https://github.com/CertForge-LLC/certforge-connector/releases/latest/download/connector.yaml.example
+curl -LO https://github.com/CertForge-LLC/certforge-connector/releases/latest/download/certforge-connector.yaml.example
 ```
 
 ### Windows
@@ -98,8 +98,8 @@ Download `certforge-connector-windows-amd64.exe` from the [latest release](https
 New-Item -ItemType Directory -Force -Path C:\certforge-connector
 Invoke-WebRequest -Uri https://github.com/CertForge-LLC/certforge-connector/releases/latest/download/certforge-connector-windows-amd64.exe `
     -OutFile C:\certforge-connector\certforge-connector.exe
-Invoke-WebRequest -Uri https://github.com/CertForge-LLC/certforge-connector/releases/latest/download/connector.yaml.example `
-    -OutFile C:\certforge-connector\connector.yaml.example
+Invoke-WebRequest -Uri https://github.com/CertForge-LLC/certforge-connector/releases/latest/download/certforge-connector.yaml.example `
+    -OutFile C:\certforge-connector\certforge-connector.yaml.example
 ```
 
 Or use `curl.exe` (built into Windows 10/11), which handles TLS automatically:
@@ -108,23 +108,23 @@ Or use `curl.exe` (built into Windows 10/11), which handles TLS automatically:
 mkdir C:\certforge-connector
 curl.exe -L -o C:\certforge-connector\certforge-connector.exe ^
   https://github.com/CertForge-LLC/certforge-connector/releases/latest/download/certforge-connector-windows-amd64.exe
-curl.exe -L -o C:\certforge-connector\connector.yaml.example ^
-  https://github.com/CertForge-LLC/certforge-connector/releases/latest/download/connector.yaml.example
+curl.exe -L -o C:\certforge-connector\certforge-connector.yaml.example ^
+  https://github.com/CertForge-LLC/certforge-connector/releases/latest/download/certforge-connector.yaml.example
 ```
 
 > **Administrator privileges** are not required to download these files. You do need an elevated prompt to install it as a Windows service (the NSSM steps below).
 
-Copy `connector.yaml.example` to `connector.yaml` and fill in your values:
+Copy `certforge-connector.yaml.example` to `certforge-connector.yaml` and fill in your values:
 
 ```cmd
-copy C:\certforge-connector\connector.yaml.example C:\certforge-connector\connector.yaml
+copy C:\certforge-connector\certforge-connector.yaml.example C:\certforge-connector\certforge-connector.yaml
 ```
 
 **Run manually (for testing):**
 
 ```powershell
 $env:CERTFORGE_API_KEY = "ct_..."
-C:\certforge-connector\certforge-connector.exe -config C:\certforge-connector\connector.yaml
+C:\certforge-connector\certforge-connector.exe -config C:\certforge-connector\certforge-connector.yaml
 ```
 
 **Run as a Windows service using [NSSM](https://nssm.cc):**
@@ -133,7 +133,7 @@ NSSM wraps any executable as a proper Windows service with automatic restart and
 
 ```cmd
 nssm install CertForgeConnector "C:\certforge-connector\certforge-connector.exe"
-nssm set CertForgeConnector AppParameters "-config C:\certforge-connector\connector.yaml"
+nssm set CertForgeConnector AppParameters "-config C:\certforge-connector\certforge-connector.yaml"
 nssm set CertForgeConnector AppDirectory "C:\certforge-connector"
 nssm set CertForgeConnector AppEnvironmentExtra "CERTFORGE_API_KEY=ct_..."
 nssm set CertForgeConnector Start SERVICE_AUTO_START
@@ -154,7 +154,7 @@ nssm start CertForgeConnector
 docker run -d --restart unless-stopped \
   --network host \
   -e CERTFORGE_API_KEY=ct_... \
-  -v /etc/certforge-connector/connector.yaml:/etc/certforge-connector/connector.yaml:ro \
+  -v /etc/certforge-connector/certforge-connector.yaml:/etc/certforge-connector/certforge-connector.yaml:ro \
   ghcr.io/certforge-llc/certforge-connector:latest
 ```
 
@@ -163,7 +163,7 @@ docker run -d --restart unless-stopped \
 ### Docker Compose
 
 ```sh
-cp connector.yaml.example connector.yaml
+cp certforge-connector.yaml.example certforge-connector.yaml
 # Set CERTFORGE_API_KEY in your environment or a .env file, then:
 docker compose up -d
 ```
@@ -180,7 +180,7 @@ go build -o certforge-connector .
 
 ## Configuration
 
-Copy `connector.yaml.example` to `connector.yaml` and fill in your values.
+Copy `certforge-connector.yaml.example` to `certforge-connector.yaml` and fill in your values.
 
 ```yaml
 # URL of your CertForge instance.
@@ -261,13 +261,13 @@ Only one secret is typically needed:
 ```sh
 # Linux / macOS
 export CERTFORGE_API_KEY=ct_...
-certforge-connector -config /etc/certforge-connector/connector.yaml
+certforge-connector -config /etc/certforge-connector/certforge-connector.yaml
 ```
 
 ```powershell
 # Windows (PowerShell)
 $env:CERTFORGE_API_KEY = "ct_..."
-.\certforge-connector.exe -config .\connector.yaml
+.\certforge-connector.exe -config .\certforge-connector.yaml
 ```
 
 When running as a Windows service, set secrets via `nssm set CertForgeConnector AppEnvironmentExtra` rather than in the YAML file.
@@ -276,7 +276,7 @@ When running as a Windows service, set secrets via `nssm set CertForgeConnector 
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-config` | `connector.yaml` | Path to the config file |
+| `-config` | `certforge-connector.yaml` | Path to the config file |
 
 ## How it works
 

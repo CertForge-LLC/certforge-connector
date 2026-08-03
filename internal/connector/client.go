@@ -248,8 +248,7 @@ func (c *Client) get(path string, out any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("GET %s: %s %s", path, resp.Status, b)
+		return fmt.Errorf("GET %s: %s", path, apiErrorMsg(resp))
 	}
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
@@ -276,11 +275,23 @@ func (c *Client) post(path string, body []byte, out any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("POST %s: %s %s", path, resp.Status, b)
+		return fmt.Errorf("POST %s: %s", path, apiErrorMsg(resp))
 	}
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
 	}
 	return nil
+}
+
+// apiErrorMsg extracts a human-readable message from a non-200 response.
+// Prefers the "error" field from a JSON body; falls back to the HTTP status line.
+func apiErrorMsg(resp *http.Response) string {
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	var e struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(b, &e) == nil && e.Error != "" {
+		return resp.Status + ": " + e.Error
+	}
+	return resp.Status
 }
