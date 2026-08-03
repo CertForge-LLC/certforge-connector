@@ -85,10 +85,12 @@ func (w *Worker) Run(ctx context.Context) {
 
 	// Check capabilities first so disabled state is known before any polling.
 	w.registerCapabilities()
-	w.poll(ctx)
-	w.pollSignRequests()
-	w.reportDeviceVersions(ctx)
-	w.reportCurrentCerts(ctx)
+	if !w.cfg.InventoryOnly {
+		w.poll(ctx)
+		w.pollSignRequests()
+		w.reportDeviceVersions(ctx)
+		w.reportCurrentCerts(ctx)
+	}
 	w.syncInventory(ctx)
 
 	for {
@@ -97,17 +99,20 @@ func (w *Worker) Run(ctx context.Context) {
 			log.Printf("[connector] shutting down")
 			return
 		case <-jobTicker.C:
-			w.poll(ctx)
-			w.pollSignRequests()
+			if !w.cfg.InventoryOnly {
+				w.poll(ctx)
+				w.pollSignRequests()
+			}
 		case <-certTicker.C:
-			w.reportCurrentCerts(ctx)
+			if !w.cfg.InventoryOnly {
+				w.reportCurrentCerts(ctx)
+			}
 		case <-inventoryTicker.C:
 			w.syncInventory(ctx)
 		case <-capsTicker.C:
 			wasDisabled := w.disabled
 			w.registerCapabilities()
-			if wasDisabled && !w.disabled {
-				// Just re-enabled — poll immediately instead of waiting for the next tick.
+			if wasDisabled && !w.disabled && !w.cfg.InventoryOnly {
 				w.poll(ctx)
 				w.pollSignRequests()
 			}
