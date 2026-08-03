@@ -287,12 +287,10 @@ func (w *Worker) reportDeviceVersions(ctx context.Context) {
 			}
 		}
 		if cfg.Username == "" || cfg.Password == "" {
-			log.Printf("[connector] device %s (%s): version check skipped: missing credentials (username_set=%v password_set=%v)",
-				d.ID, d.Host, cfg.Username != "", cfg.Password != "")
+			log.Printf("[connector] device %s (%s): version check skipped: missing credentials", d.ID, d.Host)
 			continue
 		}
-		log.Printf("[connector] device %s (%s): version check: username=%q password_len=%d skip_verify=%v",
-			d.ID, d.Host, cfg.Username, len(cfg.Password), cfg.SkipVerify)
+		log.Printf("[connector] device %s (%s): version check: skip_verify=%v", d.ID, d.Host, cfg.SkipVerify)
 		drv, err := cfg.NewDevice()
 		if err != nil {
 			log.Printf("[connector] device %s (%s): init driver: %v", d.ID, d.Host, err)
