@@ -43,10 +43,12 @@ type PrivateCAConfig struct {
 // VaultPKIConfig points the agent at a HashiCorp Vault PKI secrets engine.
 // The agent lists all issued serials and fetches each cert; revocation status
 // is read inline from the Vault response (no separate CRL file needed).
+// When a CA connector is configured in CertForge, vault config is delivered via
+// the server API and YAML fields are optional overrides.
 type VaultPKIConfig struct {
-	Addr  string `yaml:"addr"`  // Vault address, e.g. https://vault.example.com
-	Token string `yaml:"token"` // Vault token; falls back to $VAULT_TOKEN if empty
-	Mount string `yaml:"mount"` // PKI secrets engine mount path; default "pki"
+	Addr  string `yaml:"addr"  json:"addr"`  // Vault address, e.g. https://vault.example.com
+	Token string `yaml:"token" json:"token"` // Vault token; falls back to $VAULT_TOKEN if empty
+	Mount string `yaml:"mount" json:"mount"` // PKI secrets engine mount path; default "pki"
 }
 
 // DeviceConfig holds the on-prem connection details for one network device.

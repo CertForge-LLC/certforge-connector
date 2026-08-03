@@ -125,7 +125,8 @@ func (w *Worker) registerCapabilities() {
 		ids = append(ids, w.cfg.ConnectorID)
 	}
 
-	// Query CA backend versions to report on first checkin.
+	// Query CA backend versions: YAML-configured connectors first, then server-provided
+	// (best-effort; failure here does not block capability registration).
 	backendVersions := make(map[string]string)
 	allCAs := append([]PrivateCAConfig{}, w.cfg.PrivateCAs...)
 	if w.cfg.PrivateCA != nil {
@@ -135,6 +136,19 @@ func (w *Worker) registerCapabilities() {
 		if ca.VaultPKI != nil && ca.CAConnectorID != "" {
 			if ver, err := queryVaultVersion(ca.VaultPKI.Addr); err == nil && ver != "" {
 				backendVersions[ca.CAConnectorID] = "Vault " + ver
+			}
+		}
+	}
+	// Also query vault versions for server-configured connectors not covered by YAML.
+	if serverConns, err := w.client.GetCAConnectors(); err == nil {
+		for _, sc := range serverConns {
+			if _, already := backendVersions[sc.ID]; already {
+				continue
+			}
+			if sc.VaultPKI != nil && sc.VaultPKI.Addr != "" {
+				if ver, err := queryVaultVersion(sc.VaultPKI.Addr); err == nil && ver != "" {
+					backendVersions[sc.ID] = "Vault " + ver
+				}
 			}
 		}
 	}
@@ -180,71 +194,104 @@ func queryVaultVersion(addr string) (string, error) {
 	return info.Version, nil
 }
 
-// syncInventory pushes the full cert inventory of the local CA to CertForge.
-// Does nothing when ca_connector_id is not configured or no inventory source is set.
+// syncInventory pushes the full cert inventory for every CA connector this agent
+// is responsible for. It discovers connectors from the CertForge server (which may
+// include vault_pki config now stored in the CertForge UI), and falls back to
+// YAML-configured private_ca/private_cas entries for any not covered by the server.
 func (w *Worker) syncInventory(ctx context.Context) {
 	if w.disabled {
 		return
 	}
-	ca := w.cfg.PrivateCA
-	if ca == nil || ca.CAConnectorID == "" {
-		return
-	}
-	if ca.IssuedCertsDir == "" && ca.VaultPKI == nil {
-		return
-	}
 
-	// Fetch scope from CertForge.
-	connectors, err := w.client.GetCAConnectors()
+	// Pull current connector list from CertForge (scope + optional server-side vault config).
+	serverConns, err := w.client.GetCAConnectors()
 	if err != nil {
 		log.Printf("[connector] inventory sync: fetch ca-connectors: %v", err)
 		return
 	}
-	var scope ConnectorScope
-	found := false
-	for _, c := range connectors {
-		if c.ID == ca.CAConnectorID {
-			scope = c.Scope
-			found = true
-			break
+	if len(serverConns) == 0 {
+		return
+	}
+
+	// Build a lookup of YAML-configured private CAs by ca_connector_id.
+	yamlCAByID := make(map[string]*PrivateCAConfig)
+	allYAMLCAs := append([]PrivateCAConfig{}, w.cfg.PrivateCAs...)
+	if w.cfg.PrivateCA != nil {
+		allYAMLCAs = append(allYAMLCAs, *w.cfg.PrivateCA)
+	}
+	for i := range allYAMLCAs {
+		if id := allYAMLCAs[i].CAConnectorID; id != "" {
+			yamlCAByID[id] = &allYAMLCAs[i]
 		}
 	}
-	if !found {
-		log.Printf("[connector] inventory sync: ca connector %s not found in CertForge", ca.CAConnectorID)
-		return
+
+	for _, sc := range serverConns {
+		w.syncOneConnector(ctx, sc, yamlCAByID[sc.ID])
+	}
+}
+
+// syncOneConnector syncs inventory for a single CA connector.
+// vaultCfg precedence: server-provided (sc.VaultPKI) > YAML override (yamlCA.VaultPKI).
+// issued_certs_dir and crl_file always come from YAML (filesystem paths can't live in DB).
+func (w *Worker) syncOneConnector(ctx context.Context, sc CAConnectorInfo, yamlCA *PrivateCAConfig) {
+	// Resolve effective vault config: server first, YAML fallback.
+	var vaultCfg *VaultPKIConfig
+	if sc.VaultPKI != nil && sc.VaultPKI.Addr != "" {
+		vaultCfg = sc.VaultPKI
+	} else if yamlCA != nil && yamlCA.VaultPKI != nil {
+		vaultCfg = yamlCA.VaultPKI
+	}
+
+	issuedDir := ""
+	crlFile := ""
+	if yamlCA != nil {
+		issuedDir = yamlCA.IssuedCertsDir
+		crlFile = yamlCA.CRLFile
+	}
+
+	if vaultCfg == nil && issuedDir == "" {
+		return // no inventory source for this connector
 	}
 
 	var certs []InventoryCert
-	if ca.VaultPKI != nil {
-		certs, err = FetchVaultPKICerts(*ca.VaultPKI, scope)
+	if vaultCfg != nil {
+		certs, err := FetchVaultPKICerts(*vaultCfg, sc.Scope)
 		if err != nil {
-			log.Printf("[connector] inventory sync: vault-pki: %v", err)
-			_ = w.client.ReportSyncError(ca.CAConnectorID, "vault-pki: "+err.Error())
+			log.Printf("[connector] inventory sync %s (%s): vault-pki: %v", sc.ID, sc.Name, err)
+			_ = w.client.ReportSyncError(sc.ID, "vault-pki: "+err.Error())
 			return
 		}
-	} else {
-		var revokedSerials map[string]bool
-		if ca.CRLFile != "" {
-			revokedSerials, err = ReadRevokedSerials(ca.CRLFile)
-			if err != nil {
-				log.Printf("[connector] inventory sync: read CRL: %v", err)
-				// Non-fatal - continue without revocation filtering.
-			}
-		}
-		certs, err = ScanIssuedCerts(ca.IssuedCertsDir, scope, revokedSerials)
+		count, err := w.client.PushInventory(sc.ID, certs)
 		if err != nil {
-			log.Printf("[connector] inventory sync: scan %s: %v", ca.IssuedCertsDir, err)
-			_ = w.client.ReportSyncError(ca.CAConnectorID, "scan: "+err.Error())
+			log.Printf("[connector] inventory sync %s (%s): push %d certs: %v", sc.ID, sc.Name, len(certs), err)
 			return
 		}
-	}
-
-	count, err := w.client.PushInventory(ca.CAConnectorID, certs)
-	if err != nil {
-		log.Printf("[connector] inventory sync: push %d certs: %v", len(certs), err)
+		log.Printf("[connector] inventory sync %s (%s): accepted %d/%d certs (vault)", sc.ID, sc.Name, count, len(certs))
 		return
 	}
-	log.Printf("[connector] inventory sync: accepted %d/%d certs", count, len(certs))
+
+	// File-system scan path.
+	var revokedSerials map[string]bool
+	if crlFile != "" {
+		if rs, err := ReadRevokedSerials(crlFile); err != nil {
+			log.Printf("[connector] inventory sync %s (%s): read CRL: %v", sc.ID, sc.Name, err)
+		} else {
+			revokedSerials = rs
+		}
+	}
+	var err error
+	certs, err = ScanIssuedCerts(issuedDir, sc.Scope, revokedSerials)
+	if err != nil {
+		log.Printf("[connector] inventory sync %s (%s): scan %s: %v", sc.ID, sc.Name, issuedDir, err)
+		_ = w.client.ReportSyncError(sc.ID, "scan: "+err.Error())
+		return
+	}
+	count, err := w.client.PushInventory(sc.ID, certs)
+	if err != nil {
+		log.Printf("[connector] inventory sync %s (%s): push %d certs: %v", sc.ID, sc.Name, len(certs), err)
+		return
+	}
+	log.Printf("[connector] inventory sync %s (%s): accepted %d/%d certs (dir)", sc.ID, sc.Name, count, len(certs))
 }
 
 // reportDeviceVersions queries the firmware/software version from every device

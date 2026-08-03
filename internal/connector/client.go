@@ -146,10 +146,13 @@ type ConnectorScope struct {
 }
 
 // CAConnectorInfo is a CA connector record returned by CertForge.
+// VaultPKI is populated when Vault config was stored in the CertForge UI;
+// the agent falls back to its YAML vault_pki block when VaultPKI is nil.
 type CAConnectorInfo struct {
-	ID    string         `json:"id"`
-	Name  string         `json:"name"`
-	Scope ConnectorScope `json:"scope"`
+	ID       string          `json:"id"`
+	Name     string          `json:"name"`
+	Scope    ConnectorScope  `json:"scope"`
+	VaultPKI *VaultPKIConfig `json:"vault_pki,omitempty"`
 }
 
 // InventoryCert is a single cert record for the inventory push API.

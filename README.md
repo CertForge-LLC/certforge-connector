@@ -226,9 +226,13 @@ private_ca:
 
 ### Private CA — inventory sync
 
-To push the full inventory of certs your CA has issued into CertForge (so they appear in Discovery as tracked), first create a **CA connector** record in CertForge → Settings → CA Connectors → Add → "Private / Internal CA (On-Prem Agent)". Then add `ca_connector_id` and an inventory source to `private_ca`:
+To push the full inventory of certs your CA has issued into CertForge (so they appear in Discovery as tracked), first create a **CA connector** record in CertForge → Settings → CA Connectors → Add → "Private / Internal CA (On-Prem Agent)". Copy the connector ID shown under the connector name on that page.
+
+**Vault PKI and scope are configured in the CertForge UI.** Open the CA connector in Settings → CA Connectors → Edit to set the Vault address, token, mount path, and sync scope (domains, interval, date range). The agent downloads this config from the server at each sync — no vault config in YAML is required.
 
 **File-based CAs** (OpenSSL `openssl ca`, Easy-RSA, cfssl — anything that writes PEM files to a directory):
+
+Filesystem paths cannot be stored in CertForge, so they go in the YAML:
 
 ```yaml
 private_ca:
@@ -241,18 +245,27 @@ private_ca:
 
 **HashiCorp Vault PKI** (revocation read inline — no CRL file needed):
 
+Vault address, token, and mount path are configured in CertForge UI and delivered to the agent automatically. A minimal YAML is:
+
+```yaml
+private_ca:
+  cert: /etc/certforge-connector/ca.crt
+  key:  /etc/certforge-connector/ca.key
+  ca_connector_id: 00000000-0000-0000-0000-000000000000
+```
+
+If you need to inject the Vault token from a secrets manager, override it in YAML (the YAML value takes precedence for that field only):
+
 ```yaml
 private_ca:
   cert: /etc/certforge-connector/ca.crt
   key:  /etc/certforge-connector/ca.key
   ca_connector_id: 00000000-0000-0000-0000-000000000000
   vault_pki:
-    addr: https://vault.example.com
-    token: $VAULT_TOKEN   # or set the VAULT_TOKEN environment variable
-    mount: pki            # PKI secrets engine mount path (default: pki)
+    token: $VAULT_TOKEN   # inject secret via env var; addr and mount still come from CertForge UI
 ```
 
-The connector syncs inventory on startup and every 6 hours. Scope (which domains, EKU, date range to include) is configured in CertForge on the CA connector record and fetched by the agent at each sync.
+The connector syncs inventory on startup and every 6 hours (or the interval configured in the CertForge UI). Scope (which domains, EKU, date range to include) is configured in CertForge on the CA connector record.
 
 ### Environment variables
 
@@ -298,12 +311,13 @@ CertForge uses this to:
 
 ### Private CA inventory sync
 
-On startup and every 6 hours, when `ca_connector_id` and an inventory source (`issued_certs_dir` or `vault_pki`) are configured, the connector:
+On startup and every 6 hours, the connector:
 
-1. Fetches the sync scope from CertForge (domains, EKU, date range, include-expired flag)
-2. Reads the issued cert inventory — either walking the PEM file directory or calling the Vault PKI list API
-3. Applies scope filters and excludes revoked certs (from the CRL file or Vault revocation_time)
-4. Pushes the filtered batch to CertForge via `POST /api/v1/connector/ca-connectors/{id}/inventory`
+1. Calls `GET /api/v1/connector/ca-connectors` to fetch all CA connectors configured for this org, including Vault address/token/mount and sync scope (domains, EKU, date range, include-expired flag) that were set in the CertForge UI
+2. For each connector, resolves the effective inventory source — server-provided Vault config takes precedence, YAML overrides apply only for fields explicitly set in YAML
+3. Reads the issued cert inventory — either calling the Vault PKI list API or walking the PEM file directory
+4. Applies scope filters and excludes revoked certs (from the CRL file or Vault revocation_time)
+5. Pushes the filtered batch to CertForge via `POST /api/v1/connector/ca-connectors/{id}/inventory`
 
 Pushed certs land in Discovery with `governance_status=tracked` — they are immediately under CertForge management, not in the unreviewed queue.
 

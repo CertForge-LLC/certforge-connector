@@ -65,21 +65,30 @@ poll_interval: 30s
 #   ca_connector_id: 00000000-0000-0000-0000-000000000000  # UUID from CertForge UI
 #
 #   # Inventory sync (optional) — push all certs this CA has issued to Discovery.
-#   # Option A: file-based CA (OpenSSL, Easy-RSA, cfssl, etc.)
-#   issued_certs_dir: /etc/pki/CA/newcerts   # OpenSSL default; Easy-RSA: pki/issued/
-#   crl_file: /etc/pki/CA/crl.pem           # optional — revoked certs excluded from push
-#
-#   # Option B: HashiCorp Vault PKI secrets engine (revocation read inline)
+#   #
+#   # Vault PKI (addr, token, mount) and sync scope (domains, interval, etc.) can be
+#   # configured in CertForge UI under Settings → CA Connectors → Edit.
+#   # The agent reads them from the server; YAML values below are optional overrides
+#   # (useful when injecting the Vault token from a secrets manager via env var).
+#   #
+#   # Option A: HashiCorp Vault PKI secrets engine
+#   #   Configure addr/token/mount in the CertForge UI, or set them here as a YAML override:
 #   vault_pki:
-#     addr: https://vault.example.com
-#     token: $VAULT_TOKEN                    # or set VAULT_TOKEN env var
-#     mount: pki                             # PKI mount path (default: pki)
+#     addr: https://vault.example.com       # override if not set in CertForge UI
+#     token: $VAULT_TOKEN                   # or set VAULT_TOKEN env var; leave blank to use UI value
+#     mount: pki                            # PKI mount path (default: pki)
+#
+#   # Option B: file-based CA (OpenSSL, Easy-RSA, cfssl, etc.)
+#   #   Filesystem paths must be set here (cannot be stored in CertForge UI).
+#   issued_certs_dir: /etc/pki/CA/newcerts  # OpenSSL default; Easy-RSA: pki/issued/
+#   crl_file: /etc/pki/CA/crl.pem          # optional — revoked certs excluded from push
 #
 # Multiple CAs (one connector serving several PKI mounts or issuance profiles):
 # private_cas:
 #   - ca_connector_id: 00000000-0000-0000-0000-000000000000
 #     cert: /etc/ca/internal.crt
 #     key:  /etc/ca/internal.key
+#     # vault_pki addr/token/mount can be set in CertForge UI; YAML entries are overrides
 #     vault_pki:
 #       addr: https://vault.example.com
 #       token: $VAULT_TOKEN
