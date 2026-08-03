@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -59,36 +60,52 @@ func (c *Client) base() string {
 
 func (c *Client) do(ctx context.Context, method, path string, body io.Reader, contentType string) ([]byte, int, error) {
 	rawURL := c.base() + path
-	b, status, wwwAuth, err := c.doRaw(ctx, method, rawURL, body, contentType, "")
+
+	if body != nil {
+		// Requests with a body can't be probed — send with Basic auth directly.
+		b, status, _, err := c.doRaw(ctx, method, rawURL, body, contentType, "")
+		return b, status, err
+	}
+
+	// For body-less requests: probe without auth first so the device can issue the
+	// correct challenge. Sending preemptive Basic auth causes some devices to reject
+	// the request outright without returning a Digest challenge.
+	b, status, wwwAuth, err := c.doRaw(ctx, method, rawURL, nil, contentType, "none")
 	if err != nil {
 		return nil, 0, err
 	}
-	// On 401 with no body to replay, attempt HTTP Digest if challenged.
-	if status == http.StatusUnauthorized && body == nil {
-		if dc := parseDigestChallenge(wwwAuth); dc != nil {
-			// Digest auth URI must be the path component only, not the full URL.
-			parsed, _ := url.Parse(rawURL)
-			auth := c.buildDigestHeader(method, parsed.RequestURI(), dc)
-			b, status, _, err = c.doRaw(ctx, method, rawURL, nil, contentType, auth)
-			if err != nil {
-				return nil, 0, err
-			}
-		}
+	if status != http.StatusUnauthorized {
+		return b, status, nil
 	}
-	return b, status, nil
+
+	// 401 — authenticate using the challenge the device returned.
+	log.Printf("[audiocodes] %s auth challenge: %q", c.Host, wwwAuth)
+	parsed, _ := url.Parse(rawURL)
+	var auth string // empty → doRaw sends Basic auth
+	if dc := parseDigestChallenge(wwwAuth); dc != nil {
+		auth = c.buildDigestHeader(method, parsed.RequestURI(), dc)
+	}
+	b, status, _, err = c.doRaw(ctx, method, rawURL, nil, contentType, auth)
+	return b, status, err
 }
 
-// doRaw sends a single HTTP request. authOverride, if non-empty, replaces the
-// default Basic auth header (used for the Digest auth retry).
-func (c *Client) doRaw(ctx context.Context, method, url string, body io.Reader, contentType, authOverride string) ([]byte, int, string, error) {
-	req, err := http.NewRequestWithContext(ctx, method, url, body)
+// doRaw sends a single HTTP request.
+// authOverride controls the Authorization header:
+//   - ""     → send Basic auth (default)
+//   - "none" → send no Authorization header (probe)
+//   - other  → use verbatim as the Authorization header value
+func (c *Client) doRaw(ctx context.Context, method, rawURL string, body io.Reader, contentType, authOverride string) ([]byte, int, string, error) {
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, body)
 	if err != nil {
 		return nil, 0, "", err
 	}
-	if authOverride != "" {
-		req.Header.Set("Authorization", authOverride)
-	} else {
+	switch authOverride {
+	case "none":
+		// no Authorization header
+	case "":
 		req.SetBasicAuth(c.Username, c.Password)
+	default:
+		req.Header.Set("Authorization", authOverride)
 	}
 	req.Header.Set("Accept", "application/json")
 	if contentType != "" {
