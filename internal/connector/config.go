@@ -17,7 +17,7 @@ type Config struct {
 	APIKey        string            `yaml:"api_key"`         // cc_... bearer token from CertForge Settings
 	ConnectorID   string            `yaml:"connector_id"`    // ID of this connector's record in CertForge (Settings -> CA Connectors)
 	PollInterval  time.Duration     `yaml:"poll_interval"`   // default 30s
-	InventoryOnly bool              `yaml:"inventory_only"`  // skip all device jobs; only sync CA inventory
+	NoDeviceJobs  bool              `yaml:"no_device_jobs"`  // skip device polling/cert-reads; only sync CA inventory and respond to sign requests
 	Devices       []DeviceConfig    `yaml:"devices"`
 	PrivateCA     *PrivateCAConfig  `yaml:"private_ca"`  // single CA (backward compat)
 	PrivateCAs    []PrivateCAConfig `yaml:"private_cas"` // multiple CAs (use when managing several PKI mounts)
