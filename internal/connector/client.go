@@ -220,8 +220,14 @@ func (c *Client) SubmitSignRequest(connectorID, reqID, certPEM string) error {
 // RegisterCapabilities tells CertForge which device driver types this connector supports.
 // Called on startup and periodically; CertForge uses the list to populate the device-type
 // dropdown in the UI so users never have to type a type name by hand.
-func (c *Client) RegisterCapabilities(deviceTypes []string) error {
-	body, _ := json.Marshal(map[string]any{"device_types": deviceTypes})
+// If connectorID is non-empty, CertForge also checks whether that connector record is
+// enabled and returns 403 if it has been disabled.
+func (c *Client) RegisterCapabilities(deviceTypes []string, connectorID string) error {
+	payload := map[string]any{"device_types": deviceTypes}
+	if connectorID != "" {
+		payload["connector_id"] = connectorID
+	}
+	body, _ := json.Marshal(payload)
 	return c.post("/api/v1/connector/capabilities", body, nil)
 }
 

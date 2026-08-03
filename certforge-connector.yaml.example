@@ -13,6 +13,12 @@ certforge_url: https://app.certgovernance.app
 # Always load from an environment variable — never paste the token directly here.
 api_key: $CERTFORGE_API_KEY
 
+# ID of this connector's record in CertForge (Settings → CA Connectors).
+# When set, CertForge checks on startup whether the record is enabled.
+# If the record is disabled, the connector logs a clear error instead of
+# silently failing to pick up jobs.
+# connector_id: 00000000-0000-0000-0000-000000000000
+
 # How often to poll CertForge for pending jobs (default 30s).
 poll_interval: 30s
 

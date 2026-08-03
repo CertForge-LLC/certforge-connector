@@ -13,11 +13,12 @@ import (
 
 // Config is loaded from connector.yaml (or the path given via -config flag).
 type Config struct {
-	CertForgeURL string           `yaml:"certforge_url"` // e.g. https://app.certgovernance.app
-	APIKey       string           `yaml:"api_key"`       // cc_... bearer token from CertForge Settings
-	PollInterval time.Duration    `yaml:"poll_interval"` // default 30s
-	Devices      []DeviceConfig   `yaml:"devices"`
-	PrivateCA    *PrivateCAConfig `yaml:"private_ca"`  // single CA (backward compat)
+	CertForgeURL string            `yaml:"certforge_url"` // e.g. https://app.certgovernance.app
+	APIKey       string            `yaml:"api_key"`       // cc_... bearer token from CertForge Settings
+	ConnectorID  string            `yaml:"connector_id"`  // ID of this connector's record in CertForge (Settings -> CA Connectors)
+	PollInterval time.Duration     `yaml:"poll_interval"` // default 30s
+	Devices      []DeviceConfig    `yaml:"devices"`
+	PrivateCA    *PrivateCAConfig  `yaml:"private_ca"`  // single CA (backward compat)
 	PrivateCAs   []PrivateCAConfig `yaml:"private_cas"` // multiple CAs (use when managing several PKI mounts)
 }
 

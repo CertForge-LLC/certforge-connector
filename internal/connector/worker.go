@@ -95,7 +95,7 @@ func (w *Worker) Run(ctx context.Context) {
 }
 
 func (w *Worker) registerCapabilities() {
-	if err := w.client.RegisterCapabilities(SupportedDeviceTypes()); err != nil {
+	if err := w.client.RegisterCapabilities(SupportedDeviceTypes(), w.cfg.ConnectorID); err != nil {
 		log.Printf("[connector] register capabilities: %v", err)
 	}
 }
