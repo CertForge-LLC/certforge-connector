@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -57,16 +58,18 @@ func (c *Client) base() string {
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body io.Reader, contentType string) ([]byte, int, error) {
-	url := c.base() + path
-	b, status, wwwAuth, err := c.doRaw(ctx, method, url, body, contentType, "")
+	rawURL := c.base() + path
+	b, status, wwwAuth, err := c.doRaw(ctx, method, rawURL, body, contentType, "")
 	if err != nil {
 		return nil, 0, err
 	}
 	// On 401 with no body to replay, attempt HTTP Digest if challenged.
 	if status == http.StatusUnauthorized && body == nil {
 		if dc := parseDigestChallenge(wwwAuth); dc != nil {
-			auth := c.buildDigestHeader(method, c.base()+path, dc)
-			b, status, _, err = c.doRaw(ctx, method, url, nil, contentType, auth)
+			// Digest auth URI must be the path component only, not the full URL.
+			parsed, _ := url.Parse(rawURL)
+			auth := c.buildDigestHeader(method, parsed.RequestURI(), dc)
+			b, status, _, err = c.doRaw(ctx, method, rawURL, nil, contentType, auth)
 			if err != nil {
 				return nil, 0, err
 			}
