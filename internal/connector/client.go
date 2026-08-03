@@ -222,13 +222,23 @@ func (c *Client) SubmitSignRequest(connectorID, reqID, certPEM string) error {
 // dropdown in the UI so users never have to type a type name by hand.
 // connectorIDs lists all CA connector record IDs this process is driving; CertForge
 // checks each one and returns 403 if any are disabled.
-func (c *Client) RegisterCapabilities(deviceTypes []string, connectorIDs []string) error {
+func (c *Client) RegisterCapabilities(deviceTypes []string, connectorIDs []string, backendVersions map[string]string) error {
 	payload := map[string]any{
-		"device_types":  deviceTypes,
-		"connector_ids": connectorIDs,
+		"device_types":     deviceTypes,
+		"connector_ids":    connectorIDs,
+		"backend_versions": backendVersions,
 	}
 	body, _ := json.Marshal(payload)
 	return c.post("/api/v1/connector/capabilities", body, nil)
+}
+
+// ReportDeviceInfo sends device metadata (software/firmware version) to CertForge.
+// Non-fatal — caller should log but not abort on error.
+func (c *Client) ReportDeviceInfo(deviceID, softwareVersion string) error {
+	body, _ := json.Marshal(map[string]any{
+		"software_version": softwareVersion,
+	})
+	return c.post("/api/v1/connector/devices/"+deviceID+"/info", body, nil)
 }
 
 // ReportCert tells CertForge the current certificate expiry, CN, and SANs from

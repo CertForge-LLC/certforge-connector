@@ -4,11 +4,17 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"time"
+
+	"github.com/certforge/certforge-connector/internal/device"
 )
 
 // Worker polls CertForge for device jobs and executes them.
@@ -95,8 +101,7 @@ func (w *Worker) Run(ctx context.Context) {
 }
 
 func (w *Worker) registerCapabilities() {
-	// Collect all CA connector IDs: private_ca/private_cas entries + optional top-level connector_id.
-	// The server checks each one and returns 403 if any are disabled.
+	// Collect all CA connector IDs; the server checks each and returns 403 if any are disabled.
 	var ids []string
 	for connID := range w.localCAs {
 		ids = append(ids, connID)
@@ -104,9 +109,47 @@ func (w *Worker) registerCapabilities() {
 	if w.cfg.ConnectorID != "" {
 		ids = append(ids, w.cfg.ConnectorID)
 	}
-	if err := w.client.RegisterCapabilities(SupportedDeviceTypes(), ids); err != nil {
+
+	// Query CA backend versions to report on first checkin.
+	backendVersions := make(map[string]string)
+	allCAs := append([]PrivateCAConfig{}, w.cfg.PrivateCAs...)
+	if w.cfg.PrivateCA != nil {
+		allCAs = append(allCAs, *w.cfg.PrivateCA)
+	}
+	for _, ca := range allCAs {
+		if ca.VaultPKI != nil && ca.CAConnectorID != "" {
+			if ver, err := queryVaultVersion(ca.VaultPKI.Addr); err == nil && ver != "" {
+				backendVersions[ca.CAConnectorID] = "Vault " + ver
+			}
+		}
+	}
+
+	if err := w.client.RegisterCapabilities(SupportedDeviceTypes(), ids, backendVersions); err != nil {
 		log.Printf("[connector] register capabilities: %v", err)
 	}
+}
+
+// queryVaultVersion fetches the Vault version from the unauthenticated /v1/sys/health endpoint.
+func queryVaultVersion(addr string) (string, error) {
+	hc := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec - version check only
+		},
+	}
+	resp, err := hc.Get(addr + "/v1/sys/health")
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var info struct {
+		Version string `json:"version"`
+	}
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err := json.Unmarshal(b, &info); err != nil {
+		return "", err
+	}
+	return info.Version, nil
 }
 
 // syncInventory pushes the full cert inventory of the local CA to CertForge.
@@ -254,6 +297,16 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 	dev, err := effective.NewDevice()
 	if err != nil {
 		return fmt.Errorf("init device driver: %w", err)
+	}
+
+	// Report firmware version if the driver supports it (non-fatal).
+	if v, ok := dev.(device.Versioned); ok {
+		if ver, verErr := v.SoftwareVersion(ctx); verErr == nil && ver != "" {
+			log.Printf("[connector] job %s: device software version: %s", j.ID, ver)
+			if repErr := w.client.ReportDeviceInfo(j.DeviceID, ver); repErr != nil {
+				log.Printf("[connector] job %s: report device info: %v", j.ID, repErr)
+			}
+		}
 	}
 
 	log.Printf("[connector] job %s: pulling CSR from %s (%s:%d ctx %d)",
