@@ -286,8 +286,10 @@ func (w *Worker) reportDeviceVersions(ctx context.Context) {
 				cfg.SkipVerify = true
 			}
 		}
-		if cfg.Username == "" && cfg.Password == "" {
-			continue // no credentials available; skip version check
+		if cfg.Username == "" || cfg.Password == "" {
+			log.Printf("[connector] device %s (%s): version check skipped: missing credentials (username_set=%v password_set=%v)",
+				d.ID, d.Host, cfg.Username != "", cfg.Password != "")
+			continue
 		}
 		log.Printf("[connector] device %s (%s): version check: username=%q password_len=%d skip_verify=%v",
 			d.ID, d.Host, cfg.Username, len(cfg.Password), cfg.SkipVerify)
