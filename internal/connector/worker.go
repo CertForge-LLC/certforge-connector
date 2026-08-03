@@ -261,6 +261,10 @@ func (w *Worker) reportCurrentCerts(ctx context.Context) {
 		return
 	}
 	for _, d := range devices {
+		if d.Status == "inactive" {
+			log.Printf("[connector] device %s (%s): disabled in CertForge - skipping", d.ID, d.Host)
+			continue
+		}
 		w.reportOneCert(d.ID, d.Host, d.Port, d.SkipVerify)
 	}
 }

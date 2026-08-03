@@ -68,6 +68,7 @@ type RemoteDevice struct {
 	Port       int    `json:"port"`
 	TLSContext int    `json:"tls_context"`
 	SkipVerify bool   `json:"skip_verify"`
+	Status     string `json:"status"` // "active" | "inactive"
 }
 
 // Client talks to the CertForge connector REST API.
