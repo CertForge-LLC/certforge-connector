@@ -12,11 +12,14 @@ package audiocodes
 
 import (
 	"context"
+	"crypto/md5"  //nolint:gosec — MD5 required by RFC 7616 HTTP Digest Auth
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -55,27 +58,95 @@ func (c *Client) base() string {
 
 func (c *Client) do(ctx context.Context, method, path string, body io.Reader, contentType string) ([]byte, int, error) {
 	url := c.base() + path
-	req, err := http.NewRequestWithContext(ctx, method, url, body)
+	b, status, wwwAuth, err := c.doRaw(ctx, method, url, body, contentType, "")
 	if err != nil {
 		return nil, 0, err
 	}
-	req.SetBasicAuth(c.Username, c.Password)
+	// On 401 with no body to replay, attempt HTTP Digest if challenged.
+	if status == http.StatusUnauthorized && body == nil {
+		if dc := parseDigestChallenge(wwwAuth); dc != nil {
+			auth := c.buildDigestHeader(method, c.base()+path, dc)
+			b, status, _, err = c.doRaw(ctx, method, url, nil, contentType, auth)
+			if err != nil {
+				return nil, 0, err
+			}
+		}
+	}
+	return b, status, nil
+}
+
+// doRaw sends a single HTTP request. authOverride, if non-empty, replaces the
+// default Basic auth header (used for the Digest auth retry).
+func (c *Client) doRaw(ctx context.Context, method, url string, body io.Reader, contentType, authOverride string) ([]byte, int, string, error) {
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	if authOverride != "" {
+		req.Header.Set("Authorization", authOverride)
+	} else {
+		req.SetBasicAuth(c.Username, c.Password)
+	}
 	req.Header.Set("Accept", "application/json")
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
-
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("audiocodes: %w", err)
+		return nil, 0, "", fmt.Errorf("audiocodes: %w", err)
 	}
 	defer resp.Body.Close()
-
 	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return nil, resp.StatusCode, err
+		return nil, resp.StatusCode, "", err
 	}
-	return b, resp.StatusCode, nil
+	return b, resp.StatusCode, resp.Header.Get("WWW-Authenticate"), nil
+}
+
+var digestParamRE = regexp.MustCompile(`(\w+)="([^"]*)"`)
+
+type digestChallenge struct {
+	realm, nonce, qop string
+}
+
+func parseDigestChallenge(header string) *digestChallenge {
+	if !strings.HasPrefix(header, "Digest ") {
+		return nil
+	}
+	dc := &digestChallenge{}
+	for _, m := range digestParamRE.FindAllStringSubmatch(header, -1) {
+		switch m[1] {
+		case "realm":
+			dc.realm = m[2]
+		case "nonce":
+			dc.nonce = m[2]
+		case "qop":
+			dc.qop = strings.TrimSpace(strings.Split(m[2], ",")[0]) // first listed qop
+		}
+	}
+	if dc.realm == "" || dc.nonce == "" {
+		return nil
+	}
+	return dc
+}
+
+func md5s(s string) string { //nolint:gosec
+	h := md5.Sum([]byte(s))
+	return hex.EncodeToString(h[:])
+}
+
+func (c *Client) buildDigestHeader(method, uri string, dc *digestChallenge) string {
+	ha1 := md5s(c.Username + ":" + dc.realm + ":" + c.Password)
+	ha2 := md5s(method + ":" + uri)
+	if dc.qop == "auth" {
+		nc, cnonce := "00000001", "cf3b5be8"
+		resp := md5s(ha1 + ":" + dc.nonce + ":" + nc + ":" + cnonce + ":" + dc.qop + ":" + ha2)
+		return fmt.Sprintf(`Digest username="%s", realm="%s", nonce="%s", uri="%s", algorithm=MD5, qop=%s, nc=%s, cnonce="%s", response="%s"`,
+			c.Username, dc.realm, dc.nonce, uri, dc.qop, nc, cnonce, resp)
+	}
+	resp := md5s(ha1 + ":" + dc.nonce + ":" + ha2)
+	return fmt.Sprintf(`Digest username="%s", realm="%s", nonce="%s", uri="%s", response="%s"`,
+		c.Username, dc.realm, dc.nonce, uri, resp)
 }
 
 // TLSContext describes a single TLS context on the device.
@@ -163,7 +234,7 @@ func (c *Client) SoftwareVersion(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if status != http.StatusOK {
-		return "", fmt.Errorf("audiocodes: SoftwareVersion: HTTP %d", status)
+		return "", fmt.Errorf("audiocodes: SoftwareVersion: HTTP %d: %.200s", status, body)
 	}
 	var info struct {
 		SoftwareVersion string `json:"SoftwareVersion"`
