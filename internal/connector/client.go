@@ -165,6 +165,7 @@ type InventoryCert struct {
 	NotBefore string   `json:"not_before"`
 	NotAfter  string   `json:"not_after"`
 	CertPEM   string   `json:"cert_pem"`
+	IsCA      bool     `json:"is_ca,omitempty"`
 }
 
 // GetCAConnectors returns CA connectors of type "connector" configured for this org.

@@ -92,6 +92,7 @@ func FetchVaultPKICerts(cfg VaultPKIConfig, scope ConnectorScope) ([]InventoryCe
 			NotBefore: cert.NotBefore.UTC().Format(time.RFC3339),
 			NotAfter:  cert.NotAfter.UTC().Format(time.RFC3339),
 			CertPEM:   certPEM,
+			IsCA:      cert.IsCA,
 		})
 	}
 	return out, nil

@@ -171,6 +171,7 @@ func ScanIssuedCerts(dir string, scope ConnectorScope, revokedSerials map[string
 				NotBefore: cert.NotBefore.UTC().Format(time.RFC3339),
 				NotAfter:  cert.NotAfter.UTC().Format(time.RFC3339),
 				CertPEM:   string(pem.EncodeToMemory(block)),
+				IsCA:      cert.IsCA,
 			})
 		}
 		return nil
