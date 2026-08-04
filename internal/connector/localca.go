@@ -143,11 +143,14 @@ func ScanIssuedCerts(dir string, scope ConnectorScope, revokedSerials map[string
 			if !issuedAfter.IsZero() && cert.NotBefore.Before(issuedAfter) {
 				continue
 			}
-			if !matchesDomainScope(cert, scope.Domains) {
-				continue
-			}
-			if !matchesEKUScope(cert, scope.EKU) {
-				continue
+			// CA certs have no domain SANs or leaf EKU — skip those filters.
+			if !cert.IsCA {
+				if !matchesDomainScope(cert, scope.Domains) {
+					continue
+				}
+				if !matchesEKUScope(cert, scope.EKU) {
+					continue
+				}
 			}
 
 			serial := cert.SerialNumber.String()

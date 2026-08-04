@@ -69,11 +69,14 @@ func FetchVaultPKICerts(cfg VaultPKIConfig, scope ConnectorScope) ([]InventoryCe
 		if !issuedAfter.IsZero() && cert.NotBefore.Before(issuedAfter) {
 			continue
 		}
-		if !matchesDomainScope(cert, scope.Domains) {
-			continue
-		}
-		if !matchesEKUScope(cert, scope.EKU) {
-			continue
+		// CA certs have no domain SANs or leaf EKU — skip those filters.
+		if !cert.IsCA {
+			if !matchesDomainScope(cert, scope.Domains) {
+				continue
+			}
+			if !matchesEKUScope(cert, scope.EKU) {
+				continue
+			}
 		}
 
 		ekuList := make([]string, 0, len(cert.ExtKeyUsage))
