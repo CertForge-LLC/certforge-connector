@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/certforge/certforge-connector/internal/device"
@@ -469,21 +470,23 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 		}
 	}
 
-	// If the driver can generate a CSR on demand, do it now so the full
-	// renewal cycle is hands-off — no manual setup required on the device.
+	// CSRGenerator devices generate a fresh key pair and return the CSR in one
+	// call — no pre-existing key or manual setup required on the device.
+	// Fallback to PullCSR for drivers that don't implement CSRGenerator.
+	var csrPEM string
 	if gen, ok := dev.(device.CSRGenerator); ok {
 		log.Printf("[connector] job %s: generating new key+CSR on %s", j.ID, j.DeviceName)
-		if err := gen.GenerateCSR(ctx, j.Host); err != nil {
+		csrPEM, err = gen.GenerateCSR(ctx, j.Host)
+		if err != nil {
 			return fmt.Errorf("generate CSR: %w", err)
 		}
-	}
-
-	log.Printf("[connector] job %s: pulling CSR from %s (%s:%d ctx %d)",
-		j.ID, j.DeviceName, j.Host, j.Port, j.TLSContext)
-
-	csrPEM, err := dev.PullCSR(ctx)
-	if err != nil {
-		return fmt.Errorf("pull CSR: %w", err)
+	} else {
+		log.Printf("[connector] job %s: pulling CSR from %s (%s:%d ctx %d)",
+			j.ID, j.DeviceName, j.Host, j.Port, j.TLSContext)
+		csrPEM, err = dev.PullCSR(ctx)
+		if err != nil {
+			return fmt.Errorf("pull CSR: %w", err)
+		}
 	}
 
 	usingLocalCA := len(w.localCAs) > 0 || w.legacyCA != nil
@@ -509,6 +512,16 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 	log.Printf("[connector] job %s: installing cert on %s", j.ID, j.DeviceName)
 	if err := dev.InstallCert(ctx, certPEM); err != nil {
 		return fmt.Errorf("install cert: %w", err)
+	}
+
+	// Push the signing chain into the device's trusted root store if supported.
+	if installer, ok := dev.(device.TrustedRootInstaller); ok {
+		if chain := pemChain(certPEM); chain != "" {
+			log.Printf("[connector] job %s: installing trusted root chain on %s", j.ID, j.DeviceName)
+			if err := installer.InstallTrustedRoot(ctx, chain); err != nil {
+				log.Printf("[connector] job %s: install trusted root: %v (cert is installed, continuing)", j.ID, err)
+			}
+		}
 	}
 
 	// When using a local CA, report the installed cert back to CertForge
@@ -594,6 +607,13 @@ func (w *Worker) pollSignRequests() {
 
 // csrMeta extracts CN, SANs, key algorithm and key size from a CSR PEM for the
 // authorize-local-signing call. Returns empty strings on parse failure (server will reject).
+// pemChain returns everything after the first PEM block — the intermediate and
+// root CA certs bundled by CertForge after the leaf certificate.
+func pemChain(fullPEM string) string {
+	_, rest := pem.Decode([]byte(fullPEM))
+	return strings.TrimSpace(string(rest))
+}
+
 func csrMeta(csrPEM string) (cn string, sans []string, keyAlgo string, keyBits int) {
 	block, _ := pem.Decode([]byte(csrPEM))
 	if block == nil {

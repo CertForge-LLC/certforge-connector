@@ -22,10 +22,17 @@ type Versioned interface {
 	SoftwareVersion(ctx context.Context) (string, error)
 }
 
-// CSRGenerator is an optional interface for device drivers that can trigger the
-// device to generate a new key pair and CSR on demand. When implemented, the
-// connector calls GenerateCSR before PullCSR so the full renewal is hands-off.
-// cn is the desired Common Name (typically the device hostname).
+// CSRGenerator is an optional interface for device drivers that can generate a
+// new key pair and CSR on the device in a single API call. When implemented,
+// the connector calls GenerateCSR instead of PullCSR so no pre-existing key
+// or CSR is required on the device. cn is the desired Common Name.
 type CSRGenerator interface {
-	GenerateCSR(ctx context.Context, cn string) error
+	GenerateCSR(ctx context.Context, cn string) (csrPEM string, err error)
+}
+
+// TrustedRootInstaller is an optional interface for device drivers that support
+// adding CA certificates to the device's trusted root store. The connector calls
+// this after InstallCert to push the signing chain so the device trusts its peers.
+type TrustedRootInstaller interface {
+	InstallTrustedRoot(ctx context.Context, caPEM string) error
 }

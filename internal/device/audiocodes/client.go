@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -200,79 +201,87 @@ func (c *Client) ListTLSContexts(ctx context.Context) ([]TLSContextInfo, error) 
 	return envelope.TLSContext, nil
 }
 
-// GenerateCSR triggers the device to generate a new private key and CSR for the
-// configured TLS context. Implements device.CSRGenerator.
-//
-// AudioCodes Mediant REST API: POST /actions/generateTLSContextSelfSignedCert
-// Verify the exact endpoint against your firmware's REST API browser at
-// https://<host>/api/v1/browserapp under Actions.
-func (c *Client) GenerateCSR(ctx context.Context, cn string) error {
+// GenerateCSR generates a new private key on the device and returns the CSR PEM.
+// POST /api/v1/files/tls/{id}/certificate/request
+// Implements device.CSRGenerator — the connector uses this instead of PullCSR.
+func (c *Client) GenerateCSR(ctx context.Context, cn string) (string, error) {
 	if cn == "" {
 		cn = c.Host
 	}
 	payload, _ := json.Marshal(map[string]any{
-		"TLSContextIndex": c.TLSContext,
-		"SubjectName":     "CN=" + cn,
-		"KeySize":         2048,
+		"subjectName":        cn,
+		"signatureAlgorithm": "sha256",
 	})
-	_, status, err := c.do(ctx, http.MethodPost, "/actions/generateTLSContextSelfSignedCert",
-		bytes.NewReader(payload), "application/json")
+	path := fmt.Sprintf("/files/tls/%d/certificate/request", c.TLSContext)
+	body, status, err := c.do(ctx, http.MethodPost, path, bytes.NewReader(payload), "application/json")
 	if err != nil {
-		return fmt.Errorf("audiocodes: GenerateCSR: %w", err)
-	}
-	if status != http.StatusOK && status != http.StatusNoContent && status != http.StatusAccepted {
-		return fmt.Errorf("audiocodes: GenerateCSR: HTTP %d", status)
-	}
-	// Device needs a moment to generate the key pair before the CSR is readable.
-	time.Sleep(2 * time.Second)
-	return nil
-}
-
-// PullCSR retrieves the Certificate Signing Request for the configured TLS context.
-// Implements device.Device.
-func (c *Client) PullCSR(ctx context.Context) (string, error) {
-	path := fmt.Sprintf("/files/TLSContext/%d/CSR", c.TLSContext)
-	body, status, err := c.do(ctx, http.MethodGet, path, nil, "")
-	if err != nil {
-		return "", err
-	}
-	if status == http.StatusNotFound {
-		return "", fmt.Errorf("audiocodes: TLS context %d not found or has no CSR — generate a self-signed cert on the device first", c.TLSContext)
+		return "", fmt.Errorf("audiocodes: GenerateCSR: %w", err)
 	}
 	if status != http.StatusOK {
-		return "", fmt.Errorf("audiocodes: PullCSR: HTTP %d: %s", status, body)
+		return "", fmt.Errorf("audiocodes: GenerateCSR: HTTP %d: %s", status, body)
 	}
-
-	// Response may be raw PEM or JSON-wrapped.
-	text := strings.TrimSpace(string(body))
-	if strings.HasPrefix(text, "-----BEGIN") {
-		return text, nil
+	csr := strings.TrimSpace(string(body))
+	if !strings.HasPrefix(csr, "-----BEGIN") {
+		return "", fmt.Errorf("audiocodes: GenerateCSR: unexpected response: %.200s", csr)
 	}
-
-	// Try JSON unwrap.
-	var wrapper struct {
-		CSR string `json:"CSR"`
-	}
-	if err := json.Unmarshal(body, &wrapper); err == nil && wrapper.CSR != "" {
-		return wrapper.CSR, nil
-	}
-
-	return "", fmt.Errorf("audiocodes: PullCSR: unexpected response format (HTTP %d): %.200s", status, text)
+	return csr, nil
 }
 
-// InstallCert pushes a signed PEM certificate to the configured TLS context.
+// PullCSR satisfies the device.Device interface by calling GenerateCSR with the
+// device host as CN. Prefer the CSRGenerator interface path in the worker.
+func (c *Client) PullCSR(ctx context.Context) (string, error) {
+	return c.GenerateCSR(ctx, c.Host)
+}
+
+// InstallCert uploads the signed certificate chain to the device's TLS context.
+// PUT /api/v1/files/tls/{id}/certificate (multipart/form-data)
 // Implements device.Device.
 func (c *Client) InstallCert(ctx context.Context, certPEM string) error {
-	path := fmt.Sprintf("/files/TLSContext/%d", c.TLSContext)
-	body, status, err := c.do(ctx, http.MethodPut, path,
-		strings.NewReader(certPEM), "application/x-pem-file")
+	body, ct, err := pemMultipart(certPEM, "certificate.pem")
 	if err != nil {
-		return err
+		return fmt.Errorf("audiocodes: InstallCert: %w", err)
+	}
+	path := fmt.Sprintf("/files/tls/%d/certificate", c.TLSContext)
+	resp, status, err := c.do(ctx, http.MethodPut, path, body, ct)
+	if err != nil {
+		return fmt.Errorf("audiocodes: InstallCert: %w", err)
 	}
 	if status != http.StatusOK && status != http.StatusNoContent {
-		return fmt.Errorf("audiocodes: InstallCert: HTTP %d: %s", status, body)
+		return fmt.Errorf("audiocodes: InstallCert: HTTP %d: %s", status, resp)
 	}
 	return nil
+}
+
+// InstallTrustedRoot adds CA certificates to the device's trusted root store.
+// PUT /api/v1/files/tls/{id}/trustedRoot/incremental (multipart/form-data)
+// Implements device.TrustedRootInstaller.
+func (c *Client) InstallTrustedRoot(ctx context.Context, caPEM string) error {
+	body, ct, err := pemMultipart(caPEM, "trusted.pem")
+	if err != nil {
+		return fmt.Errorf("audiocodes: InstallTrustedRoot: %w", err)
+	}
+	path := fmt.Sprintf("/files/tls/%d/trustedRoot/incremental", c.TLSContext)
+	resp, status, err := c.do(ctx, http.MethodPut, path, body, ct)
+	if err != nil {
+		return fmt.Errorf("audiocodes: InstallTrustedRoot: %w", err)
+	}
+	if status != http.StatusOK && status != http.StatusNoContent {
+		return fmt.Errorf("audiocodes: InstallTrustedRoot: HTTP %d: %s", status, resp)
+	}
+	return nil
+}
+
+// pemMultipart wraps a PEM string in a multipart/form-data body with field name "file".
+func pemMultipart(pemData, filename string) (*bytes.Buffer, string, error) {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, err := mw.CreateFormFile("file", filename)
+	if err != nil {
+		return nil, "", err
+	}
+	fmt.Fprint(fw, pemData)
+	mw.Close()
+	return &buf, mw.FormDataContentType(), nil
 }
 
 // SoftwareVersion returns the device firmware version string from /api/v1/status.
