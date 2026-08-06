@@ -24,12 +24,13 @@ type Versioned interface {
 
 // CertSubject holds the certificate subject fields sent to the device for CSR generation.
 type CertSubject struct {
-	CN string // Common Name (FQDN or hostname)
-	O  string // Organization
-	OU string // Organizational Unit
-	L  string // Locality / City
-	ST string // State / Province
-	C  string // Country Code (2-letter ISO)
+	CN   string   // Common Name (FQDN or hostname)
+	SANs []string // DNS Subject Alternative Names; should include CN when using ACME CAs
+	O    string   // Organization
+	OU   string   // Organizational Unit
+	L    string   // Locality / City
+	ST   string   // State / Province
+	C    string   // Country Code (2-letter ISO)
 }
 
 // CSRGenerator is an optional interface for device drivers that can generate a

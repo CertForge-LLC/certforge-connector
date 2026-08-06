@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -486,6 +487,11 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 		}
 		if subject.CN == "" {
 			subject.CN = j.Host
+		}
+		// Include the CN as a DNS SAN when it's a hostname (not an IP).
+		// ACME CAs require DNS SANs — CN alone is not sufficient.
+		if net.ParseIP(subject.CN) == nil && subject.CN != "" {
+			subject.SANs = []string{subject.CN}
 		}
 		csrPEM, err = gen.GenerateCSR(ctx, subject)
 		if err != nil {

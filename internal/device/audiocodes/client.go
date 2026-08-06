@@ -230,6 +230,16 @@ func (c *Client) GenerateCSR(ctx context.Context, subject device.CertSubject) (s
 	if subject.C != "" {
 		fields["countryCode"] = subject.C
 	}
+	// Include DNS SANs so ACME CAs can validate and sign the cert.
+	// AudioCodes Mediant accepts "subjectAltName" as a comma-separated list of
+	// "DNS:name" entries (firmware 7.2+).
+	if len(subject.SANs) > 0 {
+		var sanParts []string
+		for _, s := range subject.SANs {
+			sanParts = append(sanParts, "DNS:"+s)
+		}
+		fields["subjectAltName"] = strings.Join(sanParts, ",")
+	}
 	payload, _ := json.Marshal(fields)
 	path := fmt.Sprintf("/files/tls/%d/certificate/request", c.TLSContext)
 	body, status, err := c.do(ctx, http.MethodPost, path, bytes.NewReader(payload), "application/json")
