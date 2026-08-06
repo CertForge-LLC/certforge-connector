@@ -500,15 +500,20 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 		}
 	}
 
-	usingLocalCA := len(w.localCAs) > 0 || w.legacyCA != nil
 	var certPEM string
+	signedLocally := false
 
-	if usingLocalCA {
+	if len(w.localCAs) > 0 || w.legacyCA != nil {
 		certPEM, err = w.signLocally(ctx, j.ID, csrPEM)
-		if err != nil {
+		if err != nil && err != errUseSubmitCSR {
 			return err
 		}
-	} else {
+		if err == nil {
+			signedLocally = true
+		}
+	}
+
+	if certPEM == "" {
 		log.Printf("[connector] job %s: submitting CSR to CertForge", j.ID)
 		result, err := w.client.SubmitCSR(j.ID, csrPEM)
 		if err != nil {
@@ -537,7 +542,7 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 
 	// When using a local CA, report the installed cert back to CertForge
 	// so inventory and expiry tracking stay current.
-	if usingLocalCA {
+	if signedLocally {
 		if info, parseErr := parseCertPEM(certPEM); parseErr == nil {
 			if repErr := w.client.ReportCert(j.DeviceID, info); repErr != nil {
 				log.Printf("[connector] job %s: report cert to CertForge: %v", j.ID, repErr)
@@ -546,7 +551,7 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 	}
 
 	certForDone := ""
-	if usingLocalCA {
+	if signedLocally {
 		certForDone = certPEM
 	}
 	if err := w.client.MarkDone(j.ID, certForDone); err != nil {
@@ -556,9 +561,14 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 	return nil
 }
 
+// errUseSubmitCSR is returned by signLocally when the server indicates the device's CA
+// is not a private_connector type and the connector should fall back to submitCSR.
+var errUseSubmitCSR = fmt.Errorf("connector: device CA requires submitCSR path")
+
 // signLocally handles DTP-governed local signing.
 // For governed CAs (ca_connector_id set): calls authorize-local-signing first (fail-closed).
 // For legacy CAs (no ca_connector_id): signs directly with a warning.
+// Returns errUseSubmitCSR when the server indicates the device's CA should use submitCSR instead.
 func (w *Worker) signLocally(ctx context.Context, jobID, csrPEM string) (string, error) {
 	// Try governed path first.
 	if len(w.localCAs) > 0 {
@@ -570,6 +580,10 @@ func (w *Worker) signLocally(ctx context.Context, jobID, csrPEM string) (string,
 			return "", fmt.Errorf("governance check failed (fail-closed - cert not signed): %w", err)
 		}
 		if !auth.Approved {
+			if auth.UseSubmitCSR {
+				log.Printf("[connector] job %s: device CA is not private_connector type — falling back to submitCSR", jobID)
+				return "", errUseSubmitCSR
+			}
 			return "", fmt.Errorf("local signing denied by CertForge: %s", auth.Reason)
 		}
 

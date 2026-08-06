@@ -208,7 +208,8 @@ func (c *Client) ReportSyncError(connectorID, errMsg string) error {
 // LocalSignAuth is the response from CertForge's authorize-local-signing endpoint.
 type LocalSignAuth struct {
 	Approved      bool   `json:"approved"`
-	Reason        string `json:"reason,omitempty"`        // set when approved=false
+	Reason        string `json:"reason,omitempty"`          // set when approved=false
+	UseSubmitCSR  bool   `json:"use_submit_csr,omitempty"`  // true when device CA is non-private_connector: fall back to submitCSR
 	CAConnectorID string `json:"ca_connector_id,omitempty"` // which local CA to sign with
 	ValidityDays  int    `json:"validity_days,omitempty"`
 	DTPID         string `json:"dtp_id,omitempty"`

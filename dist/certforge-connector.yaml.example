@@ -1,0 +1,98 @@
+# CertForge connector configuration
+# Copy this file to certforge-connector.yaml and fill in your values.
+#
+# SECRETS: Do not put the API key directly in this file.
+# Reference an environment variable — the connector expands them at startup.
+# Example (systemd): set Environment= in your unit override, or use an EnvironmentFile=.
+# Example (Docker):  pass -e CERTFORGE_API_KEY=... or use an env_file in compose.
+
+# URL of your CertForge instance.
+certforge_url: https://app.certgovernance.app
+
+# API key for this connector agent.
+# Generated in CertForge under Integrations → Connector Agents → Add Agent.
+# Always load from an environment variable — never paste the token directly here.
+api_key: $CERTFORGE_API_KEY
+
+# How often to poll CertForge for pending jobs (default 30s).
+poll_interval: 30s
+
+# Set to true when this connector instance has no network devices to manage.
+# Skips device job polling, cert reads, and version checks entirely.
+# CA inventory sync and local CA signing (for approval-flow sign requests) still work.
+# Typical use: a dedicated instance for Vault PKI or file-based CA inventory sync
+# running separately from the connector instance that reaches your network devices.
+# no_device_jobs: false
+
+# Device registration, connection details, and credentials are managed in CertForge
+# under Network Devices — there is no device list in this file.  The connector
+# receives everything it needs with each renewal job.
+#
+# Devices and CA connectors are assigned to this agent in the CertForge UI under
+# Tools → Connectors.  Unassigned devices/CAs are managed by any available agent.
+#
+# CREDENTIAL OVERRIDE (advanced, most deployments omit this):
+# If you need to keep credentials local rather than storing them in CertForge —
+# e.g. injecting passwords from a secrets manager via environment variables —
+# list one entry per device with its CertForge UUID, username, and password.
+# All other device details (host, port, type, TLS context) still come from
+# CertForge automatically with each renewal job.
+#
+# devices:
+#   - id: "00000000-0000-0000-0000-000000000000"  # UUID from CertForge → Network Devices
+#     username: admin
+#     password: $SBC1_PASSWORD
+#   - id: "11111111-1111-1111-1111-111111111111"
+#     username: admin
+#     password: $SBC2_PASSWORD
+
+# Private CA (optional) — sign device CSRs with your on-prem CA instead of
+# sending them to CertForge for signing.  Before using this, create a
+# "Private / Internal CA (On-Prem Agent)" CA connector in CertForge →
+# CA Connectors.  This auto-creates a CA record you can assign in
+# an Issuance Profile and Domain Trust Policy.
+#
+# GOVERNANCE: the connector calls CertForge to validate the domain against your
+# DTP before signing every cert (fail-closed — if CertForge is unreachable the
+# connector will not sign).  Set the device's CA to the auto-created CA record.
+#
+# Single CA:
+# private_ca:
+#   cert: /etc/certforge-connector/ca.crt   # PEM CA certificate
+#   key:  /etc/certforge-connector/ca.key   # PEM CA private key (RSA or ECDSA)
+#   validity_days: 365                       # fallback validity; DTP policy takes precedence
+#   ca_connector_id: 00000000-0000-0000-0000-000000000000  # UUID from CertForge UI (CA Connectors)
+#
+#   # Inventory sync (optional) — push all certs this CA has issued to Discovery.
+#   #
+#   # Vault PKI (addr, token, mount) and sync scope (domains, interval, etc.) can be
+#   # configured in CertForge UI under CA Connectors → Edit.
+#   # The agent reads them from the server; YAML values below are optional overrides
+#   # (useful when injecting the Vault token from a secrets manager via env var).
+#   #
+#   # Option A: HashiCorp Vault PKI secrets engine
+#   #   Configure addr/token/mount in the CertForge UI, or set them here as a YAML override:
+#   vault_pki:
+#     addr: https://vault.example.com       # override if not set in CertForge UI
+#     token: $VAULT_TOKEN                   # or set VAULT_TOKEN env var; leave blank to use UI value
+#     mount: pki                            # PKI mount path (default: pki)
+#
+#   # Option B: file-based CA (OpenSSL, Easy-RSA, cfssl, etc.)
+#   #   Filesystem paths must be set here (cannot be stored in CertForge UI).
+#   issued_certs_dir: /etc/pki/CA/newcerts  # OpenSSL default; Easy-RSA: pki/issued/
+#   crl_file: /etc/pki/CA/crl.pem          # optional — revoked certs excluded from push
+#
+# Multiple CAs (one connector serving several PKI mounts or issuance profiles):
+# private_cas:
+#   - ca_connector_id: 00000000-0000-0000-0000-000000000000
+#     cert: /etc/ca/internal.crt
+#     key:  /etc/ca/internal.key
+#     # vault_pki addr/token/mount can be set in CertForge UI; YAML entries are overrides
+#     vault_pki:
+#       addr: https://vault.example.com
+#       token: $VAULT_TOKEN
+#       mount: pki
+#   - ca_connector_id: 11111111-1111-1111-1111-111111111111
+#     cert: /etc/ca/devices.crt
+#     key:  /etc/ca/devices.key
+#     issued_certs_dir: /etc/pki/devices/newcerts
