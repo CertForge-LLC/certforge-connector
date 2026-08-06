@@ -3,9 +3,11 @@ package connector
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -520,7 +522,29 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 		}
 	}
 
+	var externalKeyPEM string // non-empty when we generated the key (not the device)
+
 	if certPEM == "" {
+		// If the device can accept an externally-generated private key and the CN is a
+		// hostname, generate a connector-side key+CSR with DNS SANs so ACME CAs work
+		// even when the device's own CSR generation API can't include SANs.
+		if _, ok := dev.(device.PrivateKeyInstaller); ok {
+			cn := j.SubjectCN
+			if cn == "" {
+				cn = j.Host
+			}
+			if net.ParseIP(cn) == nil && cn != "" {
+				extKey, extCSR, genErr := generateExternalCSR(cn, j.SubjectO, j.SubjectOU, j.SubjectL, j.SubjectST, j.SubjectC)
+				if genErr != nil {
+					log.Printf("[connector] job %s: external CSR generation failed: %v", j.ID, genErr)
+				} else {
+					log.Printf("[connector] job %s: generated external key+CSR for %s (ACME SAN flow)", j.ID, cn)
+					csrPEM = extCSR
+					externalKeyPEM = extKey
+				}
+			}
+		}
+
 		log.Printf("[connector] job %s: submitting CSR to CertForge", j.ID)
 		result, err := w.client.SubmitCSR(j.ID, csrPEM)
 		if err != nil {
@@ -530,6 +554,16 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 			return fmt.Errorf("CertForge returned empty certificate")
 		}
 		certPEM = result.Certificate
+	}
+
+	// When CertForge signed with an externally-generated key, install the private key
+	// first so the device's key matches the incoming cert.
+	if externalKeyPEM != "" {
+		log.Printf("[connector] job %s: installing external private key on %s", j.ID, j.DeviceName)
+		ki := dev.(device.PrivateKeyInstaller)
+		if err := ki.InstallPrivateKey(ctx, externalKeyPEM); err != nil {
+			return fmt.Errorf("install private key: %w", err)
+		}
 	}
 
 	log.Printf("[connector] job %s: installing cert on %s", j.ID, j.DeviceName)
@@ -666,4 +700,46 @@ func csrMeta(csrPEM string) (cn string, sans []string, keyAlgo string, keyBits i
 		keyBits = pub.Params().BitSize
 	}
 	return
+}
+
+// generateExternalCSR creates a 2048-bit RSA key pair and a CSR with the given CN
+// as both the Subject CN and a DNS SAN. Used when the device's CSR generation API
+// can't include SANs (e.g. AudioCodes firmware 7.40) but the device can accept an
+// externally-installed private key.
+func generateExternalCSR(cn, o, ou, l, st, c string) (keyPEM, csrPEM string, err error) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return "", "", fmt.Errorf("generate RSA key: %w", err)
+	}
+	subj := pkix.Name{CommonName: cn}
+	if o != "" {
+		subj.Organization = []string{o}
+	}
+	if ou != "" {
+		subj.OrganizationalUnit = []string{ou}
+	}
+	if l != "" {
+		subj.Locality = []string{l}
+	}
+	if st != "" {
+		subj.Province = []string{st}
+	}
+	if c != "" {
+		subj.Country = []string{c}
+	}
+	tmpl := &x509.CertificateRequest{
+		Subject:  subj,
+		DNSNames: []string{cn},
+	}
+	csrDER, err := x509.CreateCertificateRequest(rand.Reader, tmpl, key)
+	if err != nil {
+		return "", "", fmt.Errorf("create CSR: %w", err)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return "", "", fmt.Errorf("marshal key: %w", err)
+	}
+	keyPEM = string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}))
+	csrPEM = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER}))
+	return keyPEM, csrPEM, nil
 }

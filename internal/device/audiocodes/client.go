@@ -277,6 +277,26 @@ func (c *Client) InstallCert(ctx context.Context, certPEM string) error {
 	return nil
 }
 
+// InstallPrivateKey uploads a PEM-encoded private key to the device's TLS context.
+// PUT /api/v1/files/tls/{id}/privateKey (multipart/form-data)
+// Implements device.PrivateKeyInstaller — used when the connector generates the
+// key+CSR externally (e.g. for ACME CAs that require DNS SANs in the CSR).
+func (c *Client) InstallPrivateKey(ctx context.Context, keyPEM string) error {
+	body, ct, err := pemMultipart(keyPEM, "privatekey.pem")
+	if err != nil {
+		return fmt.Errorf("audiocodes: InstallPrivateKey: %w", err)
+	}
+	path := fmt.Sprintf("/files/tls/%d/privateKey", c.TLSContext)
+	resp, status, err := c.do(ctx, http.MethodPut, path, body, ct)
+	if err != nil {
+		return fmt.Errorf("audiocodes: InstallPrivateKey: %w", err)
+	}
+	if status != http.StatusOK && status != http.StatusNoContent {
+		return fmt.Errorf("audiocodes: InstallPrivateKey: HTTP %d: %s", status, resp)
+	}
+	return nil
+}
+
 // InstallTrustedRoot adds CA certificates to the device's trusted root store.
 // PUT /api/v1/files/tls/{id}/trustedRoot/incremental (multipart/form-data)
 // Implements device.TrustedRootInstaller.

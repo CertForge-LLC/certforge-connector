@@ -47,3 +47,11 @@ type CSRGenerator interface {
 type TrustedRootInstaller interface {
 	InstallTrustedRoot(ctx context.Context, caPEM string) error
 }
+
+// PrivateKeyInstaller is an optional interface for device drivers that accept
+// an externally-generated private key. When a device implements this alongside
+// CSRGenerator, the connector can generate its own key+CSR with DNS SANs
+// for submission to ACME CAs, then push the key and signed cert together.
+type PrivateKeyInstaller interface {
+	InstallPrivateKey(ctx context.Context, keyPEM string) error
+}
