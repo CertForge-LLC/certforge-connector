@@ -158,7 +158,7 @@ func (w *Worker) registerCapabilities() {
 		}
 	}
 
-	err := w.client.RegisterCapabilities(SupportedDeviceTypes(), ids, backendVersions)
+	err := w.client.RegisterCapabilities(SupportedDeviceTypes(), ids, backendVersions, w.version)
 	if err != nil {
 		if isConnectorDisabled(err) {
 			if !w.disabled {

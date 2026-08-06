@@ -268,11 +268,12 @@ func (c *Client) SubmitSignRequest(connectorID, reqID, certPEM string) error {
 // dropdown in the UI so users never have to type a type name by hand.
 // connectorIDs lists all CA connector record IDs this process is driving; CertForge
 // checks each one and returns 403 if any are disabled.
-func (c *Client) RegisterCapabilities(deviceTypes []string, connectorIDs []string, backendVersions map[string]string) error {
+func (c *Client) RegisterCapabilities(deviceTypes []string, connectorIDs []string, backendVersions map[string]string, version string) error {
 	payload := map[string]any{
 		"device_types":     deviceTypes,
 		"connector_ids":    connectorIDs,
 		"backend_versions": backendVersions,
+		"version":          version,
 	}
 	body, _ := json.Marshal(payload)
 	return c.post("/api/v1/connector/capabilities", body, nil)

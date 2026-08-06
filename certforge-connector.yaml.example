@@ -10,7 +10,7 @@
 certforge_url: https://app.certgovernance.app
 
 # API key for this connector agent.
-# Generated in CertForge under Tools → Connectors → Add Agent.
+# Generated in CertForge under Integrations → Connector Agents → Add Agent.
 # Always load from an environment variable — never paste the token directly here.
 api_key: $CERTFORGE_API_KEY
 
