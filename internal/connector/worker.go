@@ -469,6 +469,15 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 		}
 	}
 
+	// If the driver can generate a CSR on demand, do it now so the full
+	// renewal cycle is hands-off — no manual setup required on the device.
+	if gen, ok := dev.(device.CSRGenerator); ok {
+		log.Printf("[connector] job %s: generating new key+CSR on %s", j.ID, j.DeviceName)
+		if err := gen.GenerateCSR(ctx, j.Host); err != nil {
+			return fmt.Errorf("generate CSR: %w", err)
+		}
+	}
+
 	log.Printf("[connector] job %s: pulling CSR from %s (%s:%d ctx %d)",
 		j.ID, j.DeviceName, j.Host, j.Port, j.TLSContext)
 

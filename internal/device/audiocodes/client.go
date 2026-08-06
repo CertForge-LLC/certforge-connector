@@ -11,6 +11,7 @@
 package audiocodes
 
 import (
+	"bytes"
 	"context"
 	"crypto/md5"  //nolint:gosec — MD5 required by RFC 7616 HTTP Digest Auth
 	"crypto/tls"
@@ -197,6 +198,34 @@ func (c *Client) ListTLSContexts(ctx context.Context) ([]TLSContextInfo, error) 
 		return flat, nil
 	}
 	return envelope.TLSContext, nil
+}
+
+// GenerateCSR triggers the device to generate a new private key and CSR for the
+// configured TLS context. Implements device.CSRGenerator.
+//
+// AudioCodes Mediant REST API: POST /actions/generateTLSContextSelfSignedCert
+// Verify the exact endpoint against your firmware's REST API browser at
+// https://<host>/api/v1/browserapp under Actions.
+func (c *Client) GenerateCSR(ctx context.Context, cn string) error {
+	if cn == "" {
+		cn = c.Host
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"TLSContextIndex": c.TLSContext,
+		"SubjectName":     "CN=" + cn,
+		"KeySize":         2048,
+	})
+	_, status, err := c.do(ctx, http.MethodPost, "/actions/generateTLSContextSelfSignedCert",
+		bytes.NewReader(payload), "application/json")
+	if err != nil {
+		return fmt.Errorf("audiocodes: GenerateCSR: %w", err)
+	}
+	if status != http.StatusOK && status != http.StatusNoContent && status != http.StatusAccepted {
+		return fmt.Errorf("audiocodes: GenerateCSR: HTTP %d", status)
+	}
+	// Device needs a moment to generate the key pair before the CSR is readable.
+	time.Sleep(2 * time.Second)
+	return nil
 }
 
 // PullCSR retrieves the Certificate Signing Request for the configured TLS context.
