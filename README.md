@@ -35,21 +35,23 @@ On startup the connector calls `POST /api/v1/connector/capabilities` to register
 
 ## Prerequisites
 
-- A CertForge account with at least one CA connector configured
-- The device registered under **Network Devices** in CertForge (credentials are stored there, encrypted)
-- A connector token (created below)
+- A CertForge account
+- The devices registered under **Network Devices** in CertForge (credentials stored there, encrypted)
+- A connector agent created in CertForge (steps below)
 - The connector host must have TCP access to the device management IP on the configured port (default 443)
 
-## Creating a connector token
+## Creating a connector agent
 
-The connector authenticates to CertForge using a scoped token. These are separate from general API keys and are restricted to the connector endpoints only.
+Each running connector binary is registered in CertForge as a **Connector Agent**. Creating one generates a dedicated API key for that instance.
 
-1. Sign in to CertForge and go to **Settings → Integrations & Sources**
-2. Scroll to **Connector Tokens** and click **New Connector Token**
-3. Give it a descriptive name (e.g. `office-connector`) and click **Create**
-4. Copy the token — it starts with `ct_` and is shown **once only**
+1. Sign in to CertForge and go to **Tools → Connectors**
+2. Click **+ Add Agent**
+3. Give it a descriptive name (e.g. `HQ Connector`) and click **Create & Generate Key**
+4. Copy the API key — it starts with `ct_` and is shown **once only**
 
-Set it as an environment variable on the host running the connector:
+After creating the agent, assign devices and CA connectors to it in the CertForge UI (**Network Devices** and **CA Connectors** pages). Unassigned devices and CAs are visible to any connector.
+
+Set the key as an environment variable on the host running the connector:
 
 ```sh
 # Linux / macOS
@@ -373,7 +375,7 @@ Alert rules for connector failures and missed check-ins can be configured under 
 
 ## Security
 
-- The connector authenticates to CertForge with a scoped `ct_` connector token. These tokens can only reach the `/api/v1/connector/` endpoints — they cannot read certificates, manage CA connectors, or perform any other CertForge operations.
+- The connector authenticates to CertForge with a scoped `ct_` API key generated when you create a Connector Agent (**Tools → Connectors**). These keys can only reach the `/api/v1/connector/` endpoints — they cannot read certificates, manage CA connectors, or perform any other CertForge operations.
 - Tokens are hashed (SHA-256) at rest in CertForge. The raw token is shown only at creation.
 - **Device credentials are not stored on the connector host.** They are entered in the CertForge UI, stored AES-256-GCM encrypted in the CertForge database, and delivered to the connector only at job execution time — in memory, never written to disk.
 - The connector holds no CA credentials. Private keys never leave the device.
