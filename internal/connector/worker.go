@@ -476,7 +476,18 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 	var csrPEM string
 	if gen, ok := dev.(device.CSRGenerator); ok {
 		log.Printf("[connector] job %s: generating new key+CSR on %s", j.ID, j.DeviceName)
-		csrPEM, err = gen.GenerateCSR(ctx, j.Host)
+		subject := device.CertSubject{
+			CN: j.SubjectCN,
+			O:  j.SubjectO,
+			OU: j.SubjectOU,
+			L:  j.SubjectL,
+			ST: j.SubjectST,
+			C:  j.SubjectC,
+		}
+		if subject.CN == "" {
+			subject.CN = j.Host
+		}
+		csrPEM, err = gen.GenerateCSR(ctx, subject)
 		if err != nil {
 			return fmt.Errorf("generate CSR: %w", err)
 		}

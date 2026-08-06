@@ -26,6 +26,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/certforge/certforge-connector/internal/device"
 )
 
 // Client connects to a single Mediant VE device.
@@ -204,14 +206,31 @@ func (c *Client) ListTLSContexts(ctx context.Context) ([]TLSContextInfo, error) 
 // GenerateCSR generates a new private key on the device and returns the CSR PEM.
 // POST /api/v1/files/tls/{id}/certificate/request
 // Implements device.CSRGenerator — the connector uses this instead of PullCSR.
-func (c *Client) GenerateCSR(ctx context.Context, cn string) (string, error) {
+func (c *Client) GenerateCSR(ctx context.Context, subject device.CertSubject) (string, error) {
+	cn := subject.CN
 	if cn == "" {
 		cn = c.Host
 	}
-	payload, _ := json.Marshal(map[string]any{
+	fields := map[string]any{
 		"subjectName":        cn,
 		"signatureAlgorithm": "sha256",
-	})
+	}
+	if subject.O != "" {
+		fields["companyName"] = subject.O
+	}
+	if subject.OU != "" {
+		fields["organizationalUnit"] = subject.OU
+	}
+	if subject.L != "" {
+		fields["localityName"] = subject.L
+	}
+	if subject.ST != "" {
+		fields["state"] = subject.ST
+	}
+	if subject.C != "" {
+		fields["countryCode"] = subject.C
+	}
+	payload, _ := json.Marshal(fields)
 	path := fmt.Sprintf("/files/tls/%d/certificate/request", c.TLSContext)
 	body, status, err := c.do(ctx, http.MethodPost, path, bytes.NewReader(payload), "application/json")
 	if err != nil {
@@ -230,7 +249,7 @@ func (c *Client) GenerateCSR(ctx context.Context, cn string) (string, error) {
 // PullCSR satisfies the device.Device interface by calling GenerateCSR with the
 // device host as CN. Prefer the CSRGenerator interface path in the worker.
 func (c *Client) PullCSR(ctx context.Context) (string, error) {
-	return c.GenerateCSR(ctx, c.Host)
+	return c.GenerateCSR(ctx, device.CertSubject{CN: c.Host})
 }
 
 // InstallCert uploads the signed certificate chain to the device's TLS context.

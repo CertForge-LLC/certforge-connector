@@ -22,12 +22,22 @@ type Versioned interface {
 	SoftwareVersion(ctx context.Context) (string, error)
 }
 
+// CertSubject holds the certificate subject fields sent to the device for CSR generation.
+type CertSubject struct {
+	CN string // Common Name (FQDN or hostname)
+	O  string // Organization
+	OU string // Organizational Unit
+	L  string // Locality / City
+	ST string // State / Province
+	C  string // Country Code (2-letter ISO)
+}
+
 // CSRGenerator is an optional interface for device drivers that can generate a
 // new key pair and CSR on the device in a single API call. When implemented,
 // the connector calls GenerateCSR instead of PullCSR so no pre-existing key
-// or CSR is required on the device. cn is the desired Common Name.
+// or CSR is required on the device.
 type CSRGenerator interface {
-	GenerateCSR(ctx context.Context, cn string) (csrPEM string, err error)
+	GenerateCSR(ctx context.Context, subject CertSubject) (csrPEM string, err error)
 }
 
 // TrustedRootInstaller is an optional interface for device drivers that support
