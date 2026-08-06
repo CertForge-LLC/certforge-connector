@@ -54,12 +54,13 @@ type Job struct {
 	Port        int    `json:"port"`
 	TLSContext  int    `json:"tls_context"`
 	SkipVerify  bool   `json:"skip_verify"`
-	SubjectCN string `json:"subject_cn,omitempty"`
-	SubjectO  string `json:"subject_o,omitempty"`
-	SubjectOU string `json:"subject_ou,omitempty"`
-	SubjectL  string `json:"subject_l,omitempty"`
-	SubjectST string `json:"subject_st,omitempty"`
-	SubjectC  string `json:"subject_c,omitempty"`
+	SubjectCN        string `json:"subject_cn,omitempty"`
+	SubjectO         string `json:"subject_o,omitempty"`
+	SubjectOU        string `json:"subject_ou,omitempty"`
+	SubjectL         string `json:"subject_l,omitempty"`
+	SubjectST        string `json:"subject_st,omitempty"`
+	SubjectC         string `json:"subject_c,omitempty"`
+	IncludeHostAsSAN bool   `json:"include_host_as_san,omitempty"`
 	Username    string `json:"username,omitempty"`
 	Password    string `json:"password,omitempty"`
 	Certificate string `json:"certificate"` // populated when status=cert_ready

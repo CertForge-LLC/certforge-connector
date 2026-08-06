@@ -230,10 +230,12 @@ func (c *Client) GenerateCSR(ctx context.Context, subject device.CertSubject) (s
 	if subject.C != "" {
 		fields["countryCode"] = subject.C
 	}
-	// Note: AudioCodes Mediant (firmware 7.40 and earlier) does not support
-	// subjectAltName in the CSR generation REST API. SANs must be added by the
-	// device's own TLS context configuration. ACME CAs require DNS SANs —
-	// use a self-signed or private connector CA for devices that can't include them.
+	// subjectAltName is supported in firmware 7.40A+ (exact version TBC).
+	// The device-level "Include host as DNS SAN" toggle gates this — if unsupported,
+	// AudioCodes returns HTTP 400 "JSON form syntax error".
+	if len(subject.SANs) > 0 {
+		fields["subjectAltName"] = "DNS:" + strings.Join(subject.SANs, ",DNS:")
+	}
 	payload, _ := json.Marshal(fields)
 	path := fmt.Sprintf("/files/tls/%d/certificate/request", c.TLSContext)
 	body, status, err := c.do(ctx, http.MethodPost, path, bytes.NewReader(payload), "application/json")

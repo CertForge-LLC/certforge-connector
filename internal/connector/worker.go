@@ -488,9 +488,10 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 		if subject.CN == "" {
 			subject.CN = j.Host
 		}
-		// Include the CN as a DNS SAN when it's a hostname (not an IP).
-		// ACME CAs require DNS SANs — CN alone is not sufficient.
-		if net.ParseIP(subject.CN) == nil && subject.CN != "" {
+		// Include the CN as a DNS SAN only when the device is explicitly configured
+		// to do so (IncludeHostAsSAN). ACME CAs require this, but some firmware versions
+		// (e.g. AudioCodes 7.40) reject the subjectAltName field in the CSR generation API.
+		if j.IncludeHostAsSAN && net.ParseIP(subject.CN) == nil && subject.CN != "" {
 			subject.SANs = []string{subject.CN}
 		}
 		csrPEM, err = gen.GenerateCSR(ctx, subject)
