@@ -437,8 +437,8 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 		return nil
 	}
 
-	// cert_ready: server already issued the cert (e.g. ACME completed after the
-	// connector's HTTP timeout on the submitCSR call). Install it and mark done.
+	// cert_ready: server issued the cert via ACME after the connector's submitCSR returned.
+	// Install the private key (if the server generated it externally) then the cert.
 	if j.Status == "cert_ready" && j.Certificate != "" {
 		log.Printf("[connector] job %s: cert_ready — installing on %s", j.ID, j.DeviceName)
 		effective := DeviceConfig{
@@ -462,6 +462,17 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 		dev, err := effective.NewDevice()
 		if err != nil {
 			return fmt.Errorf("init device driver: %w", err)
+		}
+		// When the connector generated the key externally (ACME SAN flow — device CSR
+		// API can't include SANs), the server holds the key and returns it here.
+		// Install the key first so the device has it before the cert arrives.
+		if j.ExternalKeyPEM != "" {
+			if ki, ok := dev.(device.PrivateKeyInstaller); ok {
+				log.Printf("[connector] job %s: installing external private key on %s", j.ID, j.DeviceName)
+				if err := ki.InstallPrivateKey(ctx, j.ExternalKeyPEM); err != nil {
+					return fmt.Errorf("install private key: %w", err)
+				}
+			}
 		}
 		if err := dev.InstallCert(ctx, j.Certificate); err != nil {
 			return fmt.Errorf("install cert: %w", err)
@@ -569,12 +580,13 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 		}
 	}
 
-	var externalKeyPEM string // non-empty when we generated the key (not the device)
-
 	if certPEM == "" {
 		// If the device can accept an externally-generated private key and the CN is a
 		// hostname, generate a connector-side key+CSR with DNS SANs so ACME CAs work
 		// even when the device's own CSR generation API can't include SANs.
+		// The key is sent to the server along with the CSR so it survives across process
+		// restarts and the DTP approval wait; the server returns it with the cert_ready job.
+		var externalKeyPEM string
 		if _, ok := dev.(device.PrivateKeyInstaller); ok {
 			cn := j.SubjectCN
 			if cn == "" {
@@ -593,24 +605,19 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 		}
 
 		log.Printf("[connector] job %s: submitting CSR to CertForge", j.ID)
-		result, err := w.client.SubmitCSR(j.ID, csrPEM)
+		result, err := w.client.SubmitCSR(j.ID, csrPEM, externalKeyPEM)
 		if err != nil {
 			return fmt.Errorf("submit CSR: %w", err)
+		}
+		// 202 cases: server queued for approval or ACME is running — nothing to do this cycle.
+		if result.Status == "pending_approval" || result.Status == "pending_acme" {
+			log.Printf("[connector] job %s: CSR submitted — awaiting %s on server", j.ID, result.Status)
+			return nil
 		}
 		if result.Certificate == "" {
 			return fmt.Errorf("CertForge returned empty certificate")
 		}
 		certPEM = result.Certificate
-	}
-
-	// When CertForge signed with an externally-generated key, install the private key
-	// first so the device's key matches the incoming cert.
-	if externalKeyPEM != "" {
-		log.Printf("[connector] job %s: installing external private key on %s", j.ID, j.DeviceName)
-		ki := dev.(device.PrivateKeyInstaller)
-		if err := ki.InstallPrivateKey(ctx, externalKeyPEM); err != nil {
-			return fmt.Errorf("install private key: %w", err)
-		}
 	}
 
 	log.Printf("[connector] job %s: installing cert on %s", j.ID, j.DeviceName)

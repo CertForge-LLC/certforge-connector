@@ -61,9 +61,10 @@ type Job struct {
 	SubjectST        string `json:"subject_st,omitempty"`
 	SubjectC         string `json:"subject_c,omitempty"`
 	IncludeHostAsSAN bool   `json:"include_host_as_san,omitempty"`
-	Username    string `json:"username,omitempty"`
-	Password    string `json:"password,omitempty"`
-	Certificate string `json:"certificate"` // populated when status=cert_ready
+	Username       string `json:"username,omitempty"`
+	Password       string `json:"password,omitempty"`
+	Certificate    string `json:"certificate"`              // populated when status=cert_ready
+	ExternalKeyPEM string `json:"external_key_pem,omitempty"` // populated when status=cert_ready and connector generated the key
 }
 
 // RemoteDevice is a device entry returned by the CertForge connector devices API.
@@ -122,11 +123,18 @@ func (c *Client) GetJob(id string) (*Job, error) {
 	return &job, nil
 }
 
-// SubmitCSR posts a CSR for the given job. CertForge signs it and returns the cert.
-func (c *Client) SubmitCSR(jobID, csrPEM string) (*Job, error) {
-	body, _ := json.Marshal(map[string]string{"csr": csrPEM})
+// SubmitCSR posts a CSR (and optional externally-generated private key) for the given job.
+// When the server returns 202 (DTP approval required), it returns the Job with Status set to
+// "pending_approval" or "pending_acme" rather than an error — the caller should treat those
+// statuses as "nothing to do this cycle" and return nil.
+func (c *Client) SubmitCSR(jobID, csrPEM, externalKeyPEM string) (*Job, error) {
+	payload := map[string]string{"csr": csrPEM}
+	if externalKeyPEM != "" {
+		payload["external_key_pem"] = externalKeyPEM
+	}
+	body, _ := json.Marshal(payload)
 	var job Job
-	if err := c.post("/api/v1/connector/jobs/"+jobID+"/csr", body, &job); err != nil {
+	if err := c.postAccepting202("/api/v1/connector/jobs/"+jobID+"/csr", body, &job); err != nil {
 		return nil, err
 	}
 	return &job, nil
@@ -328,6 +336,17 @@ func (c *Client) get(path string, out any) error {
 }
 
 func (c *Client) post(path string, body []byte, out any) error {
+	return c.doPost(path, body, out, false)
+}
+
+// postAccepting202 is like post but treats 202 Accepted as a success, decoding the
+// response body into out. Used for endpoints that return 202 during async flows
+// (e.g. submitCSR when DTP approval is required).
+func (c *Client) postAccepting202(path string, body []byte, out any) error {
+	return c.doPost(path, body, out, true)
+}
+
+func (c *Client) doPost(path string, body []byte, out any, accept202 bool) error {
 	var bodyReader io.Reader
 	if body != nil {
 		bodyReader = bytes.NewReader(body)
@@ -345,7 +364,7 @@ func (c *Client) post(path string, body []byte, out any) error {
 		return fmt.Errorf("POST %s: %w", path, err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && !(accept202 && resp.StatusCode == http.StatusAccepted) {
 		return parseRespError("POST "+path, resp)
 	}
 	if out != nil {
