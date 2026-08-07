@@ -477,6 +477,16 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 		if err := dev.InstallCert(ctx, j.Certificate); err != nil {
 			return fmt.Errorf("install cert: %w", err)
 		}
+		// Push the signing chain (intermediate + root) into the device's trusted root
+		// store so it can serve the full chain during TLS handshakes.
+		if installer, ok := dev.(device.TrustedRootInstaller); ok {
+			if chain := pemChain(j.Certificate); chain != "" {
+				log.Printf("[connector] job %s: installing trusted root chain on %s", j.ID, j.DeviceName)
+				if err := installer.InstallTrustedRoot(ctx, chain); err != nil {
+					log.Printf("[connector] job %s: install trusted root: %v (cert is installed, continuing)", j.ID, err)
+				}
+			}
+		}
 		if err := w.client.MarkDone(j.ID, ""); err != nil {
 			log.Printf("[connector] job %s: mark done failed: %v", j.ID, err)
 		}
