@@ -56,7 +56,7 @@ type VaultPKIConfig struct {
 // The ID must match the device ID shown in the CertForge Network Devices page.
 type DeviceConfig struct {
 	ID         string `yaml:"id"`          // CertForge device ID (UUID)
-	Type       string `yaml:"type"`        // audiocodes | ribbon | cisco
+	Type       string `yaml:"type"`        // audiocodes | f5
 	Host       string `yaml:"host"`        // management IP or hostname
 	Port       int    `yaml:"port"`        // default 443
 	Username   string `yaml:"username"`

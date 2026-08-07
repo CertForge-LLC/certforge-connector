@@ -4,9 +4,13 @@
 // Certificate lifecycle flow:
 //  1. Call PullCSR to generate a new CSR from the existing key of the target
 //     client-ssl profile without disturbing the running configuration.
+//     The working CSR object is deleted from the device after download.
 //  2. CertForge signs the CSR via policy evaluation.
-//  3. Call InstallCert to upload the signed certificate and install it
+//  3. Call InstallCert to upload the signed leaf certificate and install it
 //     under the same name, so the SSL profile picks it up automatically.
+//  4. Call InstallTrustedRoot to push the signing chain (intermediates) and
+//     wire it into the profile's chain field so TLS handshakes include the
+//     full certificate chain.
 //
 // TLSContext selects which client-ssl profile to target (0-based index into
 // the profile list returned by GET /mgmt/tm/ltm/profile/client-ssl).
@@ -19,6 +23,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,7 +31,10 @@ import (
 	"time"
 )
 
-const csrWorkName = "certforge-renewal"
+const (
+	csrWorkName   = "certforge-renewal" // working CSR object name on device; deleted after download
+	chainWorkName = "certforge-chain"   // chain cert object name on device; updated on each renewal
+)
 
 // Client connects to a single F5 BIG-IP via iControl REST.
 type Client struct {
@@ -93,13 +101,52 @@ func (c *Client) postJSON(ctx context.Context, path string, payload any) ([]byte
 	return c.do(ctx, http.MethodPost, path, bytes.NewReader(b), "application/json")
 }
 
+// upload sends raw bytes to the F5 file-transfer staging area.
+// The iControl REST upload API requires a Content-Range header of the form
+// "first-last/total" even for single-chunk (non-chunked) uploads — without it
+// some TMOS versions reject the request with HTTP 400 or 411.
+func (c *Client) upload(ctx context.Context, path string, data []byte) ([]byte, int, error) {
+	url := c.base() + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+	if err != nil {
+		return nil, 0, err
+	}
+	req.SetBasicAuth(c.Username, c.Password)
+	req.Header.Set("Content-Type", "application/octet-stream")
+	if len(data) > 0 {
+		req.Header.Set("Content-Range", fmt.Sprintf("0-%d/%d", len(data)-1, len(data)))
+	}
+
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("f5: upload: %w", err)
+	}
+	defer resp.Body.Close()
+
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
+	return b, resp.StatusCode, nil
+}
+
+// pemLeaf returns the first PEM block from a (potentially multi-cert) PEM string.
+// BIG-IP's cert install endpoint expects a single certificate, not a chain.
+func pemLeaf(fullPEM string) string {
+	block, _ := pem.Decode([]byte(fullPEM))
+	if block == nil {
+		return fullPEM
+	}
+	return string(pem.EncodeToMemory(block))
+}
+
 // --- client-ssl profile lookup ---
 
 type sslProfile struct {
-	Name         string            `json:"name"`
-	Partition    string            `json:"partition"`
-	Cert         string            `json:"cert"`
-	Key          string            `json:"key"`
+	Name         string             `json:"name"`
+	Partition    string             `json:"partition"`
+	Cert         string             `json:"cert"`
+	Key          string             `json:"key"`
 	CertKeyChain []certKeyChainEntry `json:"certKeyChain"`
 }
 
@@ -217,11 +264,26 @@ func (c *Client) downloadCSR(ctx context.Context, partition, csrName string) (st
 	if status != http.StatusOK {
 		return "", fmt.Errorf("f5: download CSR: HTTP %d: %s", status, body)
 	}
-	pem := strings.TrimSpace(string(body))
-	if !strings.HasPrefix(pem, "-----BEGIN") {
-		return "", fmt.Errorf("f5: download CSR: unexpected response (not PEM): %.200s", pem)
+	p := strings.TrimSpace(string(body))
+	if !strings.HasPrefix(p, "-----BEGIN") {
+		return "", fmt.Errorf("f5: download CSR: unexpected response (not PEM): %.200s", p)
 	}
-	return pem, nil
+	return p, nil
+}
+
+// deleteCSR removes the named CSR object from the device's ssl-csr store.
+// Called after a successful download to avoid stale objects accumulating on the BIG-IP.
+// Not found (404) is treated as success — the object may have been cleaned up already.
+func (c *Client) deleteCSR(ctx context.Context, partition, csrName string) error {
+	path := fmt.Sprintf("/mgmt/tm/sys/file/ssl-csr/~%s~%s", partition, csrName)
+	_, status, err := c.do(ctx, http.MethodDelete, path, nil, "")
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK && status != http.StatusNoContent && status != http.StatusNotFound {
+		return fmt.Errorf("HTTP %d", status)
+	}
+	return nil
 }
 
 // --- cert info ---
@@ -259,7 +321,8 @@ func (c *Client) certCN(ctx context.Context, partition, certName string) (string
 // --- PullCSR implements device.Device ---
 
 // PullCSR generates a fresh CSR from the existing private key of the target
-// client-ssl profile. The key never leaves the BIG-IP.
+// client-ssl profile. The key never leaves the BIG-IP. The working CSR object
+// is deleted from the device after a successful download.
 func (c *Client) PullCSR(ctx context.Context) (string, error) {
 	profile, err := c.targetProfile(ctx)
 	if err != nil {
@@ -280,18 +343,23 @@ func (c *Client) PullCSR(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("f5: %w", err)
 	}
 
-	pem, err := c.downloadCSR(ctx, partition, csrWorkName)
+	p, err := c.downloadCSR(ctx, partition, csrWorkName)
 	if err != nil {
 		return "", err
 	}
-	return pem, nil
+
+	// Clean up — the working CSR is no longer needed on the device.
+	_ = c.deleteCSR(ctx, partition, csrWorkName)
+
+	return p, nil
 }
 
 // --- InstallCert implements device.Device ---
 
-// InstallCert uploads the signed PEM certificate to the BIG-IP and installs it
+// InstallCert uploads the signed leaf certificate to the BIG-IP and installs it
 // under the same name as the existing cert, so the SSL profile picks it up without
-// any profile reconfiguration.
+// any profile reconfiguration. Only the leaf cert is sent here; the signing chain
+// is handled separately by InstallTrustedRoot.
 func (c *Client) InstallCert(ctx context.Context, certPEM string) error {
 	profile, err := c.targetProfile(ctx)
 	if err != nil {
@@ -303,20 +371,15 @@ func (c *Client) InstallCert(ctx context.Context, certPEM string) error {
 		return err
 	}
 
-	// Upload the cert PEM to the REST file transfer staging area.
+	// BIG-IP's cert install endpoint expects a single certificate — extract the leaf.
 	fileName := certName + ".crt"
-	uploadPath := "/mgmt/shared/file-transfer/uploads/" + fileName
-	certBytes := []byte(certPEM)
-	contentRange := fmt.Sprintf("0-%d/%d", len(certBytes)-1, len(certBytes))
-
-	uploadBody, uploadStatus, err := c.do(ctx, http.MethodPost, uploadPath,
-		bytes.NewReader(certBytes), "application/octet-stream")
+	uploadBody, uploadStatus, err := c.upload(ctx,
+		"/mgmt/shared/file-transfer/uploads/"+fileName,
+		[]byte(pemLeaf(certPEM)))
 	if err != nil {
 		return fmt.Errorf("f5: upload cert: %w", err)
 	}
-	// Accept 200 and 204; some versions return the file info on 200.
 	if uploadStatus != http.StatusOK && uploadStatus != http.StatusNoContent {
-		_ = contentRange // used in the header below
 		return fmt.Errorf("f5: upload cert: HTTP %d: %s", uploadStatus, uploadBody)
 	}
 
@@ -331,6 +394,66 @@ func (c *Client) InstallCert(ctx context.Context, certPEM string) error {
 	}
 	if installStatus != http.StatusOK && installStatus != http.StatusCreated {
 		return fmt.Errorf("f5: install cert: HTTP %d: %s", installStatus, installBody)
+	}
+	return nil
+}
+
+// --- InstallTrustedRoot implements device.TrustedRootInstaller ---
+
+// InstallTrustedRoot uploads the signing chain (intermediate + root CA PEMs)
+// to the BIG-IP and wires it into the target client-ssl profile's chain field
+// so that TLS handshakes include the full certificate chain. Without this,
+// clients that don't have the intermediate cached will see "Not secure".
+//
+// The chain cert is stored as a persistent object named certforge-chain on the
+// device and is overwritten on each renewal.
+func (c *Client) InstallTrustedRoot(ctx context.Context, caPEM string) error {
+	profile, err := c.targetProfile(ctx)
+	if err != nil {
+		return err
+	}
+	_, _, partition, err := certKeyNames(profile)
+	if err != nil {
+		return err
+	}
+
+	// Upload chain PEM to staging area.
+	fileName := chainWorkName + ".crt"
+	uploadBody, uploadStatus, err := c.upload(ctx,
+		"/mgmt/shared/file-transfer/uploads/"+fileName,
+		[]byte(caPEM))
+	if err != nil {
+		return fmt.Errorf("f5: upload chain: %w", err)
+	}
+	if uploadStatus != http.StatusOK && uploadStatus != http.StatusNoContent {
+		return fmt.Errorf("f5: upload chain: HTTP %d: %s", uploadStatus, uploadBody)
+	}
+
+	// Install as a named cert object (overwrites any previous certforge-chain).
+	installBody, installStatus, err := c.postJSON(ctx, "/mgmt/tm/sys/crypto/cert", map[string]string{
+		"command":         "install",
+		"name":            fmt.Sprintf("/%s/%s", partition, chainWorkName),
+		"from-local-file": fmt.Sprintf("/var/config/rest/downloads/%s", fileName),
+	})
+	if err != nil {
+		return fmt.Errorf("f5: install chain cert: %w", err)
+	}
+	if installStatus != http.StatusOK && installStatus != http.StatusCreated {
+		return fmt.Errorf("f5: install chain cert: HTTP %d: %s", installStatus, installBody)
+	}
+
+	// Wire the chain into the client-ssl profile so BIG-IP sends it during handshakes.
+	// The chain field takes the full F5 path: /Partition/name.crt
+	chainRef := fmt.Sprintf("/%s/%s.crt", partition, chainWorkName)
+	patchData, _ := json.Marshal(map[string]string{"chain": chainRef})
+	profilePath := fmt.Sprintf("/mgmt/tm/ltm/profile/client-ssl/~%s~%s", partition, profile.Name)
+	patchBody, patchStatus, err := c.do(ctx, http.MethodPatch, profilePath,
+		bytes.NewReader(patchData), "application/json")
+	if err != nil {
+		return fmt.Errorf("f5: update profile chain: %w", err)
+	}
+	if patchStatus != http.StatusOK {
+		return fmt.Errorf("f5: update profile chain: HTTP %d: %s", patchStatus, patchBody)
 	}
 	return nil
 }
