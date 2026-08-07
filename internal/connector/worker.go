@@ -426,6 +426,53 @@ func (w *Worker) poll(ctx context.Context) {
 }
 
 func (w *Worker) executeJob(ctx context.Context, j Job) error {
+	// pending_approval: waiting for a human to approve the request in CertForge.
+	if j.Status == "pending_approval" {
+		log.Printf("[connector] job %s: awaiting approval in CertForge — waiting", j.ID)
+		return nil
+	}
+	// pending_acme: server is running ACME in the background; wait for cert_ready.
+	if j.Status == "pending_acme" {
+		log.Printf("[connector] job %s: ACME issuance in progress on server — waiting", j.ID)
+		return nil
+	}
+
+	// cert_ready: server already issued the cert (e.g. ACME completed after the
+	// connector's HTTP timeout on the submitCSR call). Install it and mark done.
+	if j.Status == "cert_ready" && j.Certificate != "" {
+		log.Printf("[connector] job %s: cert_ready — installing on %s", j.ID, j.DeviceName)
+		effective := DeviceConfig{
+			ID:         j.DeviceID,
+			Type:       j.DeviceType,
+			Host:       j.Host,
+			Port:       j.Port,
+			TLSContext: j.TLSContext,
+			SkipVerify: j.SkipVerify,
+			Username:   j.Username,
+			Password:   j.Password,
+		}
+		if devCfg := w.cfg.DeviceByID(j.DeviceID); devCfg != nil {
+			if effective.Username == "" {
+				effective.Username = devCfg.Username
+			}
+			if effective.Password == "" {
+				effective.Password = devCfg.Password
+			}
+		}
+		dev, err := effective.NewDevice()
+		if err != nil {
+			return fmt.Errorf("init device driver: %w", err)
+		}
+		if err := dev.InstallCert(ctx, j.Certificate); err != nil {
+			return fmt.Errorf("install cert: %w", err)
+		}
+		if err := w.client.MarkDone(j.ID, ""); err != nil {
+			log.Printf("[connector] job %s: mark done failed: %v", j.ID, err)
+		}
+		log.Printf("[connector] job %s: complete - cert installed on %s", j.ID, j.DeviceName)
+		return nil
+	}
+
 	// Cert-query jobs: TLS-read the device cert and report back; no CSR/install.
 	if j.Status == "pending_query" {
 		log.Printf("[connector] job %s: querying cert on %s (%s:%d)", j.ID, j.DeviceName, j.Host, j.Port)
