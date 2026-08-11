@@ -487,6 +487,14 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 				}
 			}
 		}
+		// Persist the changes — some devices (e.g. AudioCodes) stage cert uploads in
+		// RAM and revert on restart until an explicit save is issued.
+		if saver, ok := dev.(device.ConfigSaver); ok {
+			log.Printf("[connector] job %s: saving configuration on %s", j.ID, j.DeviceName)
+			if err := saver.SaveConfiguration(ctx); err != nil {
+				log.Printf("[connector] job %s: save configuration: %v (cert uploaded, marking done anyway)", j.ID, err)
+			}
+		}
 		if err := w.client.MarkDone(j.ID, ""); err != nil {
 			log.Printf("[connector] job %s: mark done failed: %v", j.ID, err)
 		}
@@ -642,6 +650,15 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 			if err := installer.InstallTrustedRoot(ctx, chain); err != nil {
 				log.Printf("[connector] job %s: install trusted root: %v (cert is installed, continuing)", j.ID, err)
 			}
+		}
+	}
+
+	// Persist the changes — some devices (e.g. AudioCodes) stage cert uploads in
+	// RAM and revert on restart until an explicit save is issued.
+	if saver, ok := dev.(device.ConfigSaver); ok {
+		log.Printf("[connector] job %s: saving configuration on %s", j.ID, j.DeviceName)
+		if err := saver.SaveConfiguration(ctx); err != nil {
+			log.Printf("[connector] job %s: save configuration: %v (cert uploaded, marking done anyway)", j.ID, err)
 		}
 	}
 

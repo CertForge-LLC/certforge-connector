@@ -55,3 +55,11 @@ type TrustedRootInstaller interface {
 type PrivateKeyInstaller interface {
 	InstallPrivateKey(ctx context.Context, keyPEM string) error
 }
+
+// ConfigSaver is an optional interface for device drivers that require an
+// explicit "save configuration" call after certificate installation. Devices
+// that don't implement this interface apply changes immediately without a
+// separate save step.
+type ConfigSaver interface {
+	SaveConfiguration(ctx context.Context) error
+}

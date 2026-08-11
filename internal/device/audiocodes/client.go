@@ -348,6 +348,27 @@ func (c *Client) SoftwareVersion(ctx context.Context) (string, error) {
 	return info.VersionID, nil
 }
 
+// SaveConfiguration commits the running configuration to non-volatile storage.
+// POST /api/v1/actions/saveConfiguration
+// Implements device.ConfigSaver.
+//
+// This must be called after InstallCert (and InstallPrivateKey when applicable)
+// to persist the changes. Without it the SBC shows the new cert in its running
+// config but reverts to the old cert on the next power cycle, and the TLS context
+// continues serving the old cert until the save + reload occurs.
+func (c *Client) SaveConfiguration(ctx context.Context) error {
+	body, status, err := c.do(ctx, http.MethodPost, "/actions/saveConfiguration", nil, "")
+	if err != nil {
+		return fmt.Errorf("audiocodes: SaveConfiguration: %w", err)
+	}
+	// 200 OK or 204 No Content both indicate success.
+	if status != http.StatusOK && status != http.StatusNoContent {
+		return fmt.Errorf("audiocodes: SaveConfiguration: HTTP %d: %s", status, body)
+	}
+	log.Printf("[audiocodes] configuration saved on %s", c.Host)
+	return nil
+}
+
 // Ping verifies connectivity and credentials by fetching the TLS context list.
 func (c *Client) Ping(ctx context.Context) error {
 	_, err := c.ListTLSContexts(ctx)
