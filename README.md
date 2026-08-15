@@ -378,8 +378,10 @@ Alert rules for connector failures and missed check-ins can be configured under 
 - The connector authenticates to CertForge with a scoped `ct_` API key generated when you create a Connector Agent (**Tools → Connectors**). These keys can only reach the `/api/v1/connector/` endpoints — they cannot read certificates, manage CA connectors, or perform any other CertForge operations.
 - Tokens are hashed (SHA-256) at rest in CertForge. The raw token is shown only at creation.
 - **Device credentials are not stored on the connector host.** They are entered in the CertForge UI, stored AES-256-GCM encrypted in the CertForge database, and delivered to the connector only at job execution time — in memory, never written to disk.
-- The connector holds no CA credentials. Private keys never leave the device.
+- **Device private keys never leave the device.** cert-manager generates key pairs on the device; the connector only exchanges the CSR and the signed certificate.
+- **On-prem CA signing path:** when a `private_ca` or `private_cas` entry is configured, the CA private key is loaded from disk on the connector host. It is never sent to CertForge. Protect the key file with `chmod 600` and restrict read access to the connector process user. For higher-assurance environments, consider a passphrase-protected key or loading the key from a local secrets manager (Vault, AWS Secrets Manager, etc.).
 - CertForge rejects connector polls from suspended or offboarded organizations and logs the attempt as a security event visible to platform administrators.
+- **Required egress:** the connector needs outbound HTTPS (port 443) to your CertForge instance (`app.certgovernance.app` for US, `eu.certgovernance.app` for EU). No inbound ports are required. If you use the on-prem CA path with Vault PKI, also allow HTTPS to your Vault address. Device management traffic (port 443 by default) stays on the private management VLAN.
 
 ## Adding a device type
 
@@ -419,6 +421,23 @@ func SupportedDeviceTypes() []string {
 This list is posted to CertForge on startup. CertForge shows it as a dropdown on the **Network Devices** registration form — once a connector with your new driver connects, `myvendor` appears as a selectable option automatically. No CertForge update is required.
 
 Pull requests for new device drivers are welcome.
+
+## Upgrading
+
+### v0.2.x → v0.3.x — `ca_connector_id` now required for private CAs
+
+If you have a `private_ca:` or `private_cas:` entry without a `ca_connector_id:`, the connector
+will **refuse to start** in v0.3.x with a clear error message. Ungoverned signing (signing
+without CertForge DTP validation) is no longer permitted.
+
+**To migrate:**
+
+1. Go to **Settings → CA Connectors** in CertForge and add a **Private / Internal CA (On-Prem Agent)** record for your CA. Copy the connector ID.
+2. Add `ca_connector_id: <id>` to your `private_ca:` (or the appropriate `private_cas:` entry) in `certforge-connector.yaml`.
+3. In CertForge, link the CA record to a Domain Trust Policy via an Issuance Profile.
+4. Restart the connector.
+
+Once configured, every local signing request is authorized by CertForge against your DTP before the connector touches the CA key.
 
 ## License
 

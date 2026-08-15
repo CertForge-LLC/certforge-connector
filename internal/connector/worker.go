@@ -29,8 +29,8 @@ type Worker struct {
 	// localCAs maps ca_connector_id → LocalCA for governed local signing (DTP-validated).
 	// Populated from private_cas[] entries (and private_ca if it has a ca_connector_id).
 	localCAs map[string]*LocalCA
-	// legacyCA is set when private_ca has no ca_connector_id (pre-governance behavior).
-	// Signing still works but bypasses DTP validation - a warning is logged each use.
+	// legacyCA is no longer used; kept as a nil sentinel to detect misconfigured YAML
+	// entries without ca_connector_id and produce a clear startup error.
 	legacyCA *LocalCA
 	// disabled is true when CertForge reports this connector is disabled.
 	// All polling is suppressed until registerCapabilities succeeds again.
@@ -63,8 +63,16 @@ func NewWorker(cfg *Config, version string) (*Worker, error) {
 			w.localCAs[caCfg.CAConnectorID] = ca
 			log.Printf("[connector] private CA loaded: ca_connector_id=%s cert=%s validity=%dd (governed)", caCfg.CAConnectorID, caCfg.CertFile, ca.validDays)
 		} else {
-			w.legacyCA = ca
-			log.Printf("[connector] private CA loaded: cert=%s validity=%dd (WARNING: no ca_connector_id - signing without DTP governance; add ca_connector_id to enable governance)", caCfg.CertFile, ca.validDays)
+			// Ungoverned signing (no ca_connector_id) is no longer supported.
+			// Every private CA must have a ca_connector_id so CertForge can enforce
+			// Domain Trust Policy before the connector signs.
+			return nil, fmt.Errorf(
+				"private CA %q has no ca_connector_id — ungoverned signing is not permitted.\n"+
+					"  1. Go to Settings → CA Connectors in CertForge and create a Private CA connector.\n"+
+					"  2. Copy the connector ID and add ca_connector_id: <id> to this private_ca entry.\n"+
+					"  3. Link the CA to a Domain Trust Policy so CertForge can authorize signing requests.",
+				caCfg.CertFile,
+			)
 		}
 	}
 	return w, nil
@@ -718,9 +726,10 @@ func (w *Worker) signLocally(ctx context.Context, jobID, csrPEM string) (string,
 		return localCA.SignCSR(csrPEM, auth.ValidityDays)
 	}
 
-	// Legacy path: no ca_connector_id - sign without governance.
-	log.Printf("[connector] WARNING job %s: signing with ungoverned local CA - add ca_connector_id to private_ca to enable DTP governance", jobID)
-	return w.legacyCA.SignCSR(csrPEM, 0)
+	// No governed CAs configured and no legacy CA — nothing can sign locally.
+	// This path is reached only if localCAs is empty, which NewWorker now prevents
+	// when any private_ca is present (a ca_connector_id is required).
+	return "", fmt.Errorf("no local CA configured for signing; add ca_connector_id to private_ca in connector.yaml")
 }
 
 // pollSignRequests checks each configured private CA for pending approval-flow signing
