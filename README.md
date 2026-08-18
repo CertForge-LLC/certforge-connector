@@ -35,7 +35,7 @@ On startup the connector calls `POST /api/v1/connector/capabilities` to register
 
 ## Prerequisites
 
-- A CertForge account
+- A CertForge account — [sign up free](https://app.certgovernance.app/signup?source=connector) (100 certs, 25 domains; no credit card required) or [self-host](https://app.certgovernance.app/download?source=connector)
 - The devices registered under **Network Devices** in CertForge (credentials stored there, encrypted)
 - A connector agent created in CertForge (steps below)
 - The connector host must have TCP access to the device management IP on the configured port (default 443)
