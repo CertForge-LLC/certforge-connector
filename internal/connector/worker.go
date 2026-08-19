@@ -565,6 +565,13 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 	// CSRGenerator devices generate a fresh key pair and return the CSR in one
 	// call — no pre-existing key or manual setup required on the device.
 	// Fallback to PullCSR for drivers that don't implement CSRGenerator.
+	// PrivateKeyInstaller devices (AudioCodes) accept an externally-generated key+CSR,
+	// so SANs can be added there even though the firmware's own CSR generation API
+	// doesn't support subjectAltName. generateExternalCSR (below) always includes the
+	// CN as a DNS SAN, so we must NOT add SANs to the device-side CSR subject — doing
+	// so would trigger a 400 "JSON form syntax error" from the firmware.
+	_, isKeyInstaller := dev.(device.PrivateKeyInstaller)
+
 	var csrPEM string
 	if gen, ok := dev.(device.CSRGenerator); ok {
 		log.Printf("[connector] job %s: generating new key+CSR on %s", j.ID, j.DeviceName)
@@ -579,10 +586,11 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 		if subject.CN == "" {
 			subject.CN = j.Host
 		}
-		// Include the CN as a DNS SAN only when the device is explicitly configured
-		// to do so (IncludeHostAsSAN). ACME CAs require this, but some firmware versions
-		// (e.g. AudioCodes 7.40) reject the subjectAltName field in the CSR generation API.
-		if j.IncludeHostAsSAN && net.ParseIP(subject.CN) == nil && subject.CN != "" {
+		// Only include the CN as a DNS SAN in the device-side CSR when the device can
+		// handle it and isn't a PrivateKeyInstaller. For PrivateKeyInstaller devices
+		// (AudioCodes 7.40A), the firmware rejects subjectAltName with HTTP 400 —
+		// the SAN is instead added by generateExternalCSR in the ACME path below.
+		if j.IncludeHostAsSAN && !isKeyInstaller && net.ParseIP(subject.CN) == nil && subject.CN != "" {
 			subject.SANs = []string{subject.CN}
 		}
 		csrPEM, err = gen.GenerateCSR(ctx, subject)
