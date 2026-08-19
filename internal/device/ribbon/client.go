@@ -315,10 +315,17 @@ func (c *Client) installServerCert(ctx context.Context) error {
 	return nil
 }
 
-// InstallTrustedRoot uploads the CA certificate to slot 2, then installs the
-// deferred server cert to slot 1. Order matters: Ribbon validates the certificate
-// chain during import, so the CA must be trusted before the server cert is accepted.
-// POST /rest/certificate/2?action=import (CA), then POST /rest/certificate/1?action=import (server)
+// InstallTrustedRoot uploads the CA chain into the device trust store (slots 2, 3, …),
+// one cert per slot, then installs the deferred server cert to slot 1. Installing each
+// cert individually is required because Ribbon's import endpoint accepts only one PEM
+// block per call — a multi-cert bundle silently drops everything after the first.
+//
+// Order matters: Ribbon validates the full certificate chain on import, so every CA cert
+// in the chain (intermediate + cross-sign root) must be trusted before the server cert
+// (slot 1) is accepted.
+//
+// POST /rest/certificate/N?action=import for N=2,3,… (CA certs)
+// POST /rest/certificate/1?action=import (server cert)
 // Implements device.TrustedRootInstaller — called automatically by the connector
 // worker after InstallCert when the signing CA chain is available.
 func (c *Client) InstallTrustedRoot(ctx context.Context, caPEM string) error {
@@ -327,26 +334,41 @@ func (c *Client) InstallTrustedRoot(ctx context.Context, caPEM string) error {
 	}
 	defer c.logout(ctx)
 
-	// Step 1: install the CA cert into the trust store (slot 2).
-	vals := url.Values{
-		"CertFileOperation": {"1"}, // certOperationCopyAndPaste
-		"CertFileContent":   {strings.TrimSpace(caPEM)},
-		"CertFileName":      {"ca-chain.pem"},
+	// Step 1: install each CA cert individually into consecutive trusted-CA slots.
+	// Ribbon only imports one PEM block per POST; a bundle would silently discard
+	// every cert after the first, leaving the chain incomplete.
+	slot := 2
+	rest := []byte(strings.TrimSpace(caPEM))
+	for len(rest) > 0 {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		certPEM := strings.TrimSpace(string(pem.EncodeToMemory(block)))
+		vals := url.Values{
+			"CertFileOperation": {"1"}, // certOperationCopyAndPaste
+			"CertFileContent":   {certPEM},
+			"CertFileName":      {fmt.Sprintf("ca-cert-%d.pem", slot)},
+		}
+		b, status, err := c.do(ctx, http.MethodPost,
+			fmt.Sprintf("/certificate/%d?action=import", slot),
+			strings.NewReader(vals.Encode()), "application/x-www-form-urlencoded")
+		if err != nil {
+			return fmt.Errorf("ribbon: InstallTrustedRoot (slot %d): %w", slot, err)
+		}
+		if status != http.StatusOK && status != http.StatusNoContent {
+			return fmt.Errorf("ribbon: InstallTrustedRoot (slot %d): HTTP %d: %s", slot, status, b)
+		}
+		if _, err := checkStatus(b); err != nil {
+			return fmt.Errorf("ribbon: InstallTrustedRoot (slot %d): %w", slot, err)
+		}
+		log.Printf("[ribbon] trusted CA cert installed in slot %d on %s", slot, c.Host)
+		slot++
 	}
-	b, status, err := c.do(ctx, http.MethodPost, "/certificate/2?action=import",
-		strings.NewReader(vals.Encode()), "application/x-www-form-urlencoded")
-	if err != nil {
-		return fmt.Errorf("ribbon: InstallTrustedRoot: %w", err)
-	}
-	if status != http.StatusOK && status != http.StatusNoContent {
-		return fmt.Errorf("ribbon: InstallTrustedRoot (CA slot): HTTP %d: %s", status, b)
-	}
-	if _, err := checkStatus(b); err != nil {
-		return fmt.Errorf("ribbon: InstallTrustedRoot (CA slot): %w", err)
-	}
-	log.Printf("[ribbon] trusted CA chain installed on %s", c.Host)
+	log.Printf("[ribbon] trusted CA chain installed on %s (%d cert(s))", c.Host, slot-2)
 
-	// Step 2: now that the CA is trusted, flush the pending server cert to slot 1.
+	// Step 2: now that all CA certs are trusted, flush the pending server cert to slot 1.
 	if c.pendingCert != "" {
 		if err := c.installServerCert(ctx); err != nil {
 			return err

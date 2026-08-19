@@ -487,11 +487,16 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 		}
 		// Push the signing chain (intermediate + root) into the device's trusted root
 		// store so it can serve the full chain during TLS handshakes.
+		// InstallTrustedRoot also flushes the cached server cert (slot 1) after
+		// installing the CA chain (slots 2+), so its error covers both operations.
 		if installer, ok := dev.(device.TrustedRootInstaller); ok {
 			if chain := pemChain(j.Certificate); chain != "" {
 				log.Printf("[connector] job %s: installing trusted root chain on %s", j.ID, j.DeviceName)
 				if err := installer.InstallTrustedRoot(ctx, chain); err != nil {
-					log.Printf("[connector] job %s: install trusted root: %v (cert is installed, continuing)", j.ID, err)
+					// CA chain or server cert install failed — do not mark done.
+					// The job stays cert_ready on the server so the next poll retries.
+					log.Printf("[connector] job %s: CA chain / cert install failed: %v", j.ID, err)
+					return err
 				}
 			}
 		}
