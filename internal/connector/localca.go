@@ -279,5 +279,11 @@ func (ca *LocalCA) SignCSR(csrPEM string, validityDays int) (string, error) {
 		return "", fmt.Errorf("local CA: sign: %w", err)
 	}
 
-	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), nil
+	// Return the full chain: leaf cert followed by the signing CA cert.
+	// Devices that require the CA to be in their trust store before accepting the server
+	// certificate (e.g. Ribbon SWE-lite) depend on this chain; the connector worker calls
+	// pemChain(j.Certificate) to extract the CA portion and passes it to InstallTrustedRoot.
+	leafPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.cert.Raw})
+	return string(leafPEM) + string(caPEM), nil
 }

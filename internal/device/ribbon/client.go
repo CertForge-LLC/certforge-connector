@@ -18,6 +18,7 @@ package ribbon
 import (
 	"context"
 	"crypto/tls"
+	"encoding/pem"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -273,14 +274,20 @@ func (c *Client) PullCSR(ctx context.Context) (string, error) {
 	return c.GenerateCSR(ctx, device.CertSubject{CN: c.Host})
 }
 
-// InstallCert caches the signed PEM for deferred installation.
+// InstallCert caches the server certificate for deferred installation.
 // Ribbon validates the certificate chain on import, so the CA cert (slot 2) must be
 // present in the device's trust store before the server cert (slot 1) can be accepted.
-// The connector worker calls InstallCert first, then InstallTrustedRoot; we defer the
-// actual slot-1 write until InstallTrustedRoot has added the CA to the trust store.
+// The worker passes the full chain (leaf + CA PEM); we extract just the leaf for slot 1
+// and defer the actual push until InstallTrustedRoot has added the CA to the trust store.
 // Implements device.Device.
 func (c *Client) InstallCert(_ context.Context, certPEM string) error {
-	c.pendingCert = strings.TrimSpace(certPEM)
+	// The worker passes j.Certificate which contains the full chain (leaf + CA cert).
+	// Ribbon slot 1 wants only the server certificate; cache just the first PEM block.
+	leaf := strings.TrimSpace(certPEM)
+	if block, _ := pem.Decode([]byte(certPEM)); block != nil {
+		leaf = strings.TrimSpace(string(pem.EncodeToMemory(block)))
+	}
+	c.pendingCert = leaf
 	log.Printf("[ribbon] server cert cached on %s — will install after CA chain is loaded", c.Host)
 	return nil
 }
