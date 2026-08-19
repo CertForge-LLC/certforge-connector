@@ -263,6 +263,37 @@ func (c *Client) InstallCert(ctx context.Context, certPEM string) error {
 	return nil
 }
 
+// InstallTrustedRoot uploads a CA certificate (or chain) to certificate slot 2,
+// the first trusted CA slot on Ribbon devices (slot 1 is the server cert).
+// POST /rest/certificate/2?action=import
+// Implements device.TrustedRootInstaller — called automatically by the connector
+// worker after InstallCert when the signing CA chain is available.
+func (c *Client) InstallTrustedRoot(ctx context.Context, caPEM string) error {
+	if err := c.login(ctx); err != nil {
+		return err
+	}
+	defer c.logout(ctx)
+
+	vals := url.Values{
+		"CertFileOperation": {"1"}, // certOperationCopyAndPaste
+		"CertFileContent":   {base64.StdEncoding.EncodeToString([]byte(caPEM))},
+		"CertFileName":      {"ca-chain.pem"},
+	}
+	b, status, err := c.do(ctx, http.MethodPost, "/certificate/2?action=import",
+		strings.NewReader(vals.Encode()), "application/x-www-form-urlencoded")
+	if err != nil {
+		return fmt.Errorf("ribbon: InstallTrustedRoot: %w", err)
+	}
+	if status != http.StatusOK && status != http.StatusNoContent {
+		return fmt.Errorf("ribbon: InstallTrustedRoot: HTTP %d: %s", status, b)
+	}
+	if _, err := checkStatus(b); err != nil {
+		return fmt.Errorf("ribbon: InstallTrustedRoot: %w", err)
+	}
+	log.Printf("[ribbon] trusted CA chain installed on %s", c.Host)
+	return nil
+}
+
 // SoftwareVersion returns the running firmware version string.
 // GET /rest/system
 // Implements device.Versioned.
