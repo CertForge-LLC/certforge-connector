@@ -151,6 +151,14 @@ func (c *Client) MarkDone(jobID, certPEM string) error {
 	return c.post("/api/v1/connector/jobs/"+jobID+"/done", body, nil)
 }
 
+// MarkJobFailed tells CertForge a job cannot be completed so it stops being
+// returned by PollJobs. Use for permanent local errors (denied signing,
+// device unreachable after retries, cert install failure).
+func (c *Client) MarkJobFailed(jobID, reason string) error {
+	body, _ := json.Marshal(map[string]string{"reason": reason})
+	return c.post("/api/v1/connector/jobs/"+jobID+"/fail", body, nil)
+}
+
 // ConnectorScope is the sync scope for a private CA connector, fetched from CertForge.
 type ConnectorScope struct {
 	Domains        []string `json:"domains"`

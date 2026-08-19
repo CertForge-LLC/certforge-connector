@@ -599,6 +599,12 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 	if len(w.localCAs) > 0 || w.legacyCA != nil {
 		certPEM, err = w.signLocally(ctx, j.ID, csrPEM)
 		if err != nil && err != errUseSubmitCSR {
+			// Permanent denial (no CA configured, DTP not found, governance check failed):
+			// tell the server to mark this job failed so PollJobs stops returning it and
+			// the connector stops regenerating a new device key on every poll cycle.
+			if mfErr := w.client.MarkJobFailed(j.ID, err.Error()); mfErr != nil {
+				log.Printf("[connector] job %s: mark-failed: %v", j.ID, mfErr)
+			}
 			return err
 		}
 		if err == nil {
