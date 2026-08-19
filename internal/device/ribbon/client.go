@@ -274,21 +274,19 @@ func (c *Client) PullCSR(ctx context.Context) (string, error) {
 	return c.GenerateCSR(ctx, device.CertSubject{CN: c.Host})
 }
 
-// InstallCert caches the server certificate for deferred installation.
-// Ribbon validates the certificate chain on import, so the CA cert (slot 2) must be
-// present in the device's trust store before the server cert (slot 1) can be accepted.
-// The worker passes the full chain (leaf + CA PEM); we extract just the leaf for slot 1
-// and defer the actual push until InstallTrustedRoot has added the CA to the trust store.
+// InstallCert caches the full certificate chain for deferred installation.
+// Ribbon validates the chain on import; sending the full bundle (leaf + intermediates)
+// to slot 1 lets Ribbon verify the chain against its built-in root store rather than
+// requiring every intermediate to be pre-loaded in the trusted CA slots.
+// The actual push to slot 1 is deferred until InstallTrustedRoot has run (so the
+// trusted CA slots are populated as a belt-and-suspenders fallback).
 // Implements device.Device.
 func (c *Client) InstallCert(_ context.Context, certPEM string) error {
-	// The worker passes j.Certificate which contains the full chain (leaf + CA cert).
-	// Ribbon slot 1 wants only the server certificate; cache just the first PEM block.
-	leaf := strings.TrimSpace(certPEM)
-	if block, _ := pem.Decode([]byte(certPEM)); block != nil {
-		leaf = strings.TrimSpace(string(pem.EncodeToMemory(block)))
-	}
-	c.pendingCert = leaf
-	log.Printf("[ribbon] server cert cached on %s — will install after CA chain is loaded", c.Host)
+	// Cache the full chain (leaf + intermediates). Sending the chain to slot 1
+	// lets Ribbon anchor verification against its built-in firmware root store
+	// (ISRG Root X1 etc.) without requiring the root to be in the trusted CA slots.
+	c.pendingCert = strings.TrimSpace(certPEM)
+	log.Printf("[ribbon] server cert chain cached on %s — will install after CA roots are loaded", c.Host)
 	return nil
 }
 
