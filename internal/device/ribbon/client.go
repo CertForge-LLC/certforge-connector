@@ -154,18 +154,29 @@ func (c *Client) do(ctx context.Context, method, path string, body io.Reader, co
 
 // ribbonResponse is the common XML envelope returned by every Ribbon REST response.
 // The status block is present on all responses; the resource block varies.
+//
+// Observed envelope shape (app_status_entry carries a code attribute, no description child):
+//
+//	<root><status><http_code>NNN</http_code>
+//	  <app_status href="..."><app_status_entry code="NNNNN" params=""/></app_status>
+//	</status></root>
+type ribbonAppEntry struct {
+	Code string `xml:"code,attr"`
+}
 type ribbonResponse struct {
-	HTTPCode   int    `xml:"status>http_code"`
-	ErrMessage string `xml:"status>app_status_entry>description"`
+	HTTPCode   int            `xml:"status>http_code"`
+	AppEntry   ribbonAppEntry `xml:"status>app_status>app_status_entry"`
 	// CSR resource
 	CSRContent string `xml:"csr>csrContent"`
 	// System resource (firmware version) — Ribbon SWE-lite reports version at
 	// rt_Software_Base_Version, e.g. "13.1.0", with build at rt_Software_Base_BuildNumber.
-	SWVersion   string `xml:"system>rt_Software_Base_Version"`
-	SWBuildNum  string `xml:"system>rt_Software_Base_BuildNumber"`
+	SWVersion  string `xml:"system>rt_Software_Base_Version"`
+	SWBuildNum string `xml:"system>rt_Software_Base_BuildNumber"`
 }
 
 // checkStatus returns a non-nil error if the device reported an application-level failure.
+// On error, includes the app_status_entry code and the raw body (first 400 bytes) so
+// the caller's log line shows the full Ribbon error for debugging.
 func checkStatus(b []byte) (*ribbonResponse, error) {
 	var r ribbonResponse
 	if err := xml.Unmarshal(b, &r); err != nil {
@@ -174,7 +185,11 @@ func checkStatus(b []byte) (*ribbonResponse, error) {
 		return &r, nil
 	}
 	if r.HTTPCode != 0 && r.HTTPCode != http.StatusOK {
-		return &r, fmt.Errorf("device status %d: %s", r.HTTPCode, r.ErrMessage)
+		detail := r.AppEntry.Code
+		if detail == "" {
+			detail = strings.TrimSpace(string(b[:min(len(b), 400)]))
+		}
+		return &r, fmt.Errorf("device status %d: %s", r.HTTPCode, detail)
 	}
 	return &r, nil
 }
