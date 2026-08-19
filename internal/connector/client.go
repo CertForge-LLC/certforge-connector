@@ -222,6 +222,13 @@ type LocalSignAuth struct {
 	CAConnectorID string `json:"ca_connector_id,omitempty"` // which local CA to sign with
 	ValidityDays  int    `json:"validity_days,omitempty"`
 	DTPID         string `json:"dtp_id,omitempty"`
+	// Subject template fields from the DTP's issuance profile. Non-empty values override
+	// the corresponding fields in the CSR subject so cert attributes are governed centrally.
+	SubjectO  string `json:"subject_o,omitempty"`
+	SubjectOU string `json:"subject_ou,omitempty"`
+	SubjectL  string `json:"subject_l,omitempty"`
+	SubjectST string `json:"subject_st,omitempty"`
+	SubjectC  string `json:"subject_c,omitempty"`
 }
 
 // AuthorizeLocalSigning calls CertForge to validate that the job's domain is covered

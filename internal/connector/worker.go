@@ -723,7 +723,14 @@ func (w *Worker) signLocally(ctx context.Context, jobID, csrPEM string) (string,
 		}
 
 		log.Printf("[connector] job %s: signing with governed local CA ca_connector_id=%s validity=%dd dtp=%s", jobID, auth.CAConnectorID, auth.ValidityDays, auth.DTPID)
-		return localCA.SignCSR(csrPEM, auth.ValidityDays)
+		var subj *SubjectTemplate
+		if auth.SubjectO != "" || auth.SubjectOU != "" || auth.SubjectC != "" || auth.SubjectST != "" || auth.SubjectL != "" {
+			subj = &SubjectTemplate{
+				O: auth.SubjectO, OU: auth.SubjectOU,
+				L: auth.SubjectL, ST: auth.SubjectST, C: auth.SubjectC,
+			}
+		}
+		return localCA.SignCSR(csrPEM, auth.ValidityDays, subj)
 	}
 
 	// No governed CAs configured and no legacy CA — nothing can sign locally.
@@ -747,7 +754,7 @@ func (w *Worker) pollSignRequests() {
 		}
 		for _, req := range reqs {
 			log.Printf("[connector] sign-request %s: signing for %s", req.ID, req.Domains)
-			certPEM, err := ca.SignCSR(req.CSRPEM, ca.validDays)
+			certPEM, err := ca.SignCSR(req.CSRPEM, ca.validDays, nil) // no subject template for approval-flow requests
 			if err != nil {
 				log.Printf("[connector] sign-request %s: sign CSR: %v", req.ID, err)
 				continue

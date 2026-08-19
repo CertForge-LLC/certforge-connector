@@ -237,10 +237,22 @@ func parseCertPEM(certPEM string) (CertInfo, error) {
 	return info, nil
 }
 
+// SubjectTemplate carries org-level defaults for the cert subject sourced from the DTP's
+// issuance profile. Non-empty fields override what the CSR provides; the CN is always
+// taken from the CSR (it is device-specific and must not be overridden centrally).
+type SubjectTemplate struct {
+	O  string // Organization
+	OU string // Organizational Unit
+	L  string // Locality
+	ST string // State or Province
+	C  string // Country (2-letter ISO code)
+}
+
 // SignCSR signs a PEM-encoded CSR and returns a PEM-encoded certificate.
 // SignCSR signs the given CSR PEM with this CA.
 // validityDays overrides the configured default when > 0; 0 uses the config value.
-func (ca *LocalCA) SignCSR(csrPEM string, validityDays int) (string, error) {
+// subj, when non-nil, overlays org-level subject fields (O, OU, L, ST, C) over the CSR subject.
+func (ca *LocalCA) SignCSR(csrPEM string, validityDays int, subj *SubjectTemplate) (string, error) {
 	if validityDays <= 0 {
 		validityDays = ca.validDays
 	}
@@ -261,16 +273,40 @@ func (ca *LocalCA) SignCSR(csrPEM string, validityDays int) (string, error) {
 		return "", fmt.Errorf("local CA: generate serial: %w", err)
 	}
 
+	// Build the cert subject: CN always comes from the CSR (device-specific); O, OU, L, ST, C
+	// come from the issuance profile template when provided, falling back to the CSR values.
+	subject := pkix.Name{
+		CommonName:   csr.Subject.CommonName,
+		Organization: csr.Subject.Organization,
+	}
+	if subj != nil {
+		if subj.O != "" {
+			subject.Organization = []string{subj.O}
+		}
+		if subj.OU != "" {
+			subject.OrganizationalUnit = []string{subj.OU}
+		}
+		if subj.L != "" {
+			subject.Locality = []string{subj.L}
+		}
+		if subj.ST != "" {
+			subject.Province = []string{subj.ST}
+		}
+		if subj.C != "" {
+			subject.Country = []string{subj.C}
+		}
+	}
+
 	now := time.Now().UTC()
 	template := &x509.Certificate{
-		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: csr.Subject.CommonName, Organization: csr.Subject.Organization},
-		NotBefore:    now.Add(-1 * time.Minute), // small back-date to handle clock skew
-		NotAfter:     now.Add(time.Duration(validityDays) * 24 * time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		DNSNames:     csr.DNSNames,
-		IPAddresses:  csr.IPAddresses,
+		SerialNumber:   serial,
+		Subject:        subject,
+		NotBefore:      now.Add(-1 * time.Minute), // small back-date to handle clock skew
+		NotAfter:       now.Add(time.Duration(validityDays) * 24 * time.Hour),
+		KeyUsage:       x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:    []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:       csr.DNSNames,
+		IPAddresses:    csr.IPAddresses,
 		EmailAddresses: csr.EmailAddresses,
 	}
 
