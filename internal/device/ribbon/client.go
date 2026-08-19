@@ -42,8 +42,9 @@ type Client struct {
 	// Defaults to 2048 when zero or unset.
 	KeyBits int
 
-	hc     *http.Client
-	cookie string // cached session cookie value ("name=value")
+	hc        *http.Client
+	cookieHdr string // "Cookie:" header value — all session cookies joined with "; "
+	csrfToken string // csrfp_token value, sent as X-CSRF-Token on every request
 }
 
 func (c *Client) httpClient() *http.Client {
@@ -92,24 +93,37 @@ func (c *Client) login(ctx context.Context) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("ribbon: login: HTTP %d (check credentials)", resp.StatusCode)
 	}
-	// Session token arrives as a Set-Cookie header; extract the first cookie.
+	// Ribbon sets two cookies: PHPSESSID (session) and csrfp_token (CSRF protection).
+	// Both must be sent on every subsequent request, and csrfp_token must also be
+	// sent as an X-CSRF-Token header for the device to accept any API call.
+	var parts []string
 	for _, ck := range resp.Cookies() {
-		c.cookie = ck.Name + "=" + ck.Value
-		return nil
+		parts = append(parts, ck.Name+"="+ck.Value)
+		if ck.Name == "csrfp_token" {
+			c.csrfToken = ck.Value
+		}
 	}
-	return fmt.Errorf("ribbon: login: no session cookie in response")
+	if len(parts) == 0 {
+		return fmt.Errorf("ribbon: login: no session cookie in response")
+	}
+	c.cookieHdr = strings.Join(parts, "; ")
+	return nil
 }
 
 func (c *Client) logout(ctx context.Context) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base()+"/logout", nil)
 	if err == nil {
-		req.Header.Set("Cookie", c.cookie)
+		req.Header.Set("Cookie", c.cookieHdr)
+		if c.csrfToken != "" {
+			req.Header.Set("X-CSRF-Token", c.csrfToken)
+		}
 		resp, err := c.httpClient().Do(req)
 		if err == nil {
 			resp.Body.Close()
 		}
 	}
-	c.cookie = ""
+	c.cookieHdr = ""
+	c.csrfToken = ""
 }
 
 // do sends an authenticated request and returns the raw body.
@@ -118,7 +132,12 @@ func (c *Client) do(ctx context.Context, method, path string, body io.Reader, co
 	if err != nil {
 		return nil, 0, err
 	}
-	req.Header.Set("Cookie", c.cookie)
+	req.Header.Set("Cookie", c.cookieHdr)
+	// Ribbon enforces CSRF protection — every request must carry the csrfp_token
+	// both as a cookie (included above) and as the X-CSRF-Token header.
+	if c.csrfToken != "" {
+		req.Header.Set("X-CSRF-Token", c.csrfToken)
+	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
@@ -141,8 +160,10 @@ type ribbonResponse struct {
 	ErrMessage string `xml:"status>app_status_entry>description"`
 	// CSR resource
 	CSRContent string `xml:"csr>csrContent"`
-	// System resource (firmware version)
-	SWVersion string `xml:"system>SWVersion"`
+	// System resource (firmware version) — Ribbon SWE-lite reports version at
+	// rt_Software_Base_Version, e.g. "13.1.0", with build at rt_Software_Base_BuildNumber.
+	SWVersion   string `xml:"system>rt_Software_Base_Version"`
+	SWBuildNum  string `xml:"system>rt_Software_Base_BuildNumber"`
 }
 
 // checkStatus returns a non-nil error if the device reported an application-level failure.
@@ -315,6 +336,9 @@ func (c *Client) SoftwareVersion(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("ribbon: SoftwareVersion: %w", err)
 	}
 	if resp.SWVersion != "" {
+		if resp.SWBuildNum != "" {
+			return resp.SWVersion + " build " + resp.SWBuildNum, nil
+		}
 		return resp.SWVersion, nil
 	}
 	// Version field not present in response — return empty rather than raw XML noise.
