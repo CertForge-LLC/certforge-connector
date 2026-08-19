@@ -18,7 +18,6 @@ package ribbon
 import (
 	"context"
 	"crypto/tls"
-	"encoding/base64"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -256,7 +255,8 @@ func (c *Client) PullCSR(ctx context.Context) (string, error) {
 // InstallCert uploads a signed PEM certificate to slot 1, the server certificate
 // slot on Ribbon SWE-lite devices. Certificate IDs ≥2 are trusted CA certs.
 // POST /rest/certificate/1?action=import
-// CertFileOperation=1 selects copy-and-paste mode (base64 PEM in CertFileContent).
+// CertFileOperation=1 selects copy-and-paste mode; CertFileContent is the raw
+// PEM string (not re-encoded — PEM is already base64 DER with headers).
 // Implements device.Device.
 func (c *Client) InstallCert(ctx context.Context, certPEM string) error {
 	if err := c.login(ctx); err != nil {
@@ -266,7 +266,7 @@ func (c *Client) InstallCert(ctx context.Context, certPEM string) error {
 
 	vals := url.Values{
 		"CertFileOperation": {"1"}, // certOperationCopyAndPaste
-		"CertFileContent":   {base64.StdEncoding.EncodeToString([]byte(certPEM))},
+		"CertFileContent":   {strings.TrimSpace(certPEM)},
 		"CertFileName":      {"server.pem"},
 	}
 	b, status, err := c.do(ctx, http.MethodPost, "/certificate/1?action=import",
@@ -297,7 +297,7 @@ func (c *Client) InstallTrustedRoot(ctx context.Context, caPEM string) error {
 
 	vals := url.Values{
 		"CertFileOperation": {"1"}, // certOperationCopyAndPaste
-		"CertFileContent":   {base64.StdEncoding.EncodeToString([]byte(caPEM))},
+		"CertFileContent":   {strings.TrimSpace(caPEM)},
 		"CertFileName":      {"ca-chain.pem"},
 	}
 	b, status, err := c.do(ctx, http.MethodPost, "/certificate/2?action=import",
