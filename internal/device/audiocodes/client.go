@@ -211,26 +211,19 @@ func (c *Client) GenerateCSR(ctx context.Context, subject device.CertSubject) (s
 	if cn == "" {
 		cn = c.Host
 	}
+	// AudioCodes Mediant firmware 7.40A only accepts a small set of known JSON fields
+	// in the CSR generation request. Unknown fields (including companyName,
+	// organizationalUnit, localityName, state, countryCode) cause HTTP 400
+	// "JSON form syntax error". Since Let's Encrypt strips these fields from DV certs
+	// regardless, we intentionally omit them from the request.
+	//
+	// subjectAltName is also gated — the "Include host as DNS SAN" device flag controls
+	// whether it is sent. Older firmware returns 400 for that field too.
 	fields := map[string]any{
 		"subjectName":        cn,
 		"signatureAlgorithm": "sha256",
 	}
-	if subject.O != "" {
-		fields["companyName"] = subject.O
-	}
-	if subject.OU != "" {
-		fields["organizationalUnit"] = subject.OU
-	}
-	if subject.L != "" {
-		fields["localityName"] = subject.L
-	}
-	if subject.ST != "" {
-		fields["state"] = subject.ST
-	}
-	if subject.C != "" {
-		fields["countryCode"] = subject.C
-	}
-	// subjectAltName is supported in firmware 7.40A+ (exact version TBC).
+	// subjectAltName is supported in some 7.40A builds but not all.
 	// The device-level "Include host as DNS SAN" toggle gates this — if unsupported,
 	// AudioCodes returns HTTP 400 "JSON form syntax error".
 	if len(subject.SANs) > 0 {
