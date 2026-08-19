@@ -310,13 +310,15 @@ func (c *Client) SoftwareVersion(ctx context.Context) (string, error) {
 	if status != http.StatusOK {
 		return "", fmt.Errorf("ribbon: SoftwareVersion: HTTP %d: %.200s", status, b)
 	}
-	resp, _ := checkStatus(b)
+	resp, err := checkStatus(b)
+	if err != nil {
+		return "", fmt.Errorf("ribbon: SoftwareVersion: %w", err)
+	}
 	if resp.SWVersion != "" {
 		return resp.SWVersion, nil
 	}
-	// Return raw body excerpt if XML parse didn't yield a version; let the caller
-	// surface it rather than silently failing version reporting.
-	return strings.TrimSpace(string(b[:min(len(b), 200)])), nil
+	// Version field not present in response — return empty rather than raw XML noise.
+	return "", nil
 }
 
 func min(a, b int) int {
