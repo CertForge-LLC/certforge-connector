@@ -44,6 +44,12 @@ type Client struct {
 	hc        *http.Client
 	cookieHdr string // "Cookie:" header value — all session cookies joined with "; "
 	csrfToken string // csrfp_token value, sent as X-CSRF-Token on every request
+
+	// pendingCert holds the server cert PEM waiting to be installed after the CA
+	// chain is trusted. Ribbon validates the chain on import, so the CA cert (slot 2)
+	// must be installed before the server cert (slot 1). The connector worker calls
+	// InstallCert first then InstallTrustedRoot, so we defer the server cert install.
+	pendingCert string
 }
 
 func (c *Client) httpClient() *http.Client {
@@ -267,21 +273,23 @@ func (c *Client) PullCSR(ctx context.Context) (string, error) {
 	return c.GenerateCSR(ctx, device.CertSubject{CN: c.Host})
 }
 
-// InstallCert uploads a signed PEM certificate to slot 1, the server certificate
-// slot on Ribbon SWE-lite devices. Certificate IDs ≥2 are trusted CA certs.
-// POST /rest/certificate/1?action=import
-// CertFileOperation=1 selects copy-and-paste mode; CertFileContent is the raw
-// PEM string (not re-encoded — PEM is already base64 DER with headers).
+// InstallCert caches the signed PEM for deferred installation.
+// Ribbon validates the certificate chain on import, so the CA cert (slot 2) must be
+// present in the device's trust store before the server cert (slot 1) can be accepted.
+// The connector worker calls InstallCert first, then InstallTrustedRoot; we defer the
+// actual slot-1 write until InstallTrustedRoot has added the CA to the trust store.
 // Implements device.Device.
-func (c *Client) InstallCert(ctx context.Context, certPEM string) error {
-	if err := c.login(ctx); err != nil {
-		return err
-	}
-	defer c.logout(ctx)
+func (c *Client) InstallCert(_ context.Context, certPEM string) error {
+	c.pendingCert = strings.TrimSpace(certPEM)
+	log.Printf("[ribbon] server cert cached on %s — will install after CA chain is loaded", c.Host)
+	return nil
+}
 
+// installServerCert pushes the cached server cert PEM to certificate slot 1.
+func (c *Client) installServerCert(ctx context.Context) error {
 	vals := url.Values{
 		"CertFileOperation": {"1"}, // certOperationCopyAndPaste
-		"CertFileContent":   {strings.TrimSpace(certPEM)},
+		"CertFileContent":   {c.pendingCert},
 		"CertFileName":      {"server.pem"},
 	}
 	b, status, err := c.do(ctx, http.MethodPost, "/certificate/1?action=import",
@@ -296,12 +304,14 @@ func (c *Client) InstallCert(ctx context.Context, certPEM string) error {
 		return fmt.Errorf("ribbon: InstallCert: %w", err)
 	}
 	log.Printf("[ribbon] certificate installed on %s", c.Host)
+	c.pendingCert = ""
 	return nil
 }
 
-// InstallTrustedRoot uploads a CA certificate (or chain) to certificate slot 2,
-// the first trusted CA slot on Ribbon devices (slot 1 is the server cert).
-// POST /rest/certificate/2?action=import
+// InstallTrustedRoot uploads the CA certificate to slot 2, then installs the
+// deferred server cert to slot 1. Order matters: Ribbon validates the certificate
+// chain during import, so the CA must be trusted before the server cert is accepted.
+// POST /rest/certificate/2?action=import (CA), then POST /rest/certificate/1?action=import (server)
 // Implements device.TrustedRootInstaller — called automatically by the connector
 // worker after InstallCert when the signing CA chain is available.
 func (c *Client) InstallTrustedRoot(ctx context.Context, caPEM string) error {
@@ -310,6 +320,7 @@ func (c *Client) InstallTrustedRoot(ctx context.Context, caPEM string) error {
 	}
 	defer c.logout(ctx)
 
+	// Step 1: install the CA cert into the trust store (slot 2).
 	vals := url.Values{
 		"CertFileOperation": {"1"}, // certOperationCopyAndPaste
 		"CertFileContent":   {strings.TrimSpace(caPEM)},
@@ -321,12 +332,19 @@ func (c *Client) InstallTrustedRoot(ctx context.Context, caPEM string) error {
 		return fmt.Errorf("ribbon: InstallTrustedRoot: %w", err)
 	}
 	if status != http.StatusOK && status != http.StatusNoContent {
-		return fmt.Errorf("ribbon: InstallTrustedRoot: HTTP %d: %s", status, b)
+		return fmt.Errorf("ribbon: InstallTrustedRoot (CA slot): HTTP %d: %s", status, b)
 	}
 	if _, err := checkStatus(b); err != nil {
-		return fmt.Errorf("ribbon: InstallTrustedRoot: %w", err)
+		return fmt.Errorf("ribbon: InstallTrustedRoot (CA slot): %w", err)
 	}
 	log.Printf("[ribbon] trusted CA chain installed on %s", c.Host)
+
+	// Step 2: now that the CA is trusted, flush the pending server cert to slot 1.
+	if c.pendingCert != "" {
+		if err := c.installServerCert(ctx); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
