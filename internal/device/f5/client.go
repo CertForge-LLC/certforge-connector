@@ -582,8 +582,8 @@ func (c *Client) InstallTrustedRoot(ctx context.Context, caPEM string) error {
 	}
 
 	// Wire the chain into the client-ssl profile so BIG-IP sends it during handshakes.
-	// The chain field takes the full F5 path: /Partition/name.crt
-	chainRef := fmt.Sprintf("/%s/%s.crt", partition, chainWorkName)
+	// BIG-IP crypto objects use bare names (no extension) when installed via the API.
+	chainRef := fmt.Sprintf("/%s/%s", partition, chainWorkName)
 	patchData, _ := json.Marshal(map[string]string{"chain": chainRef})
 	profilePath := fmt.Sprintf("/mgmt/tm/ltm/profile/client-ssl/~%s~%s", partition, profile.Name)
 	patchBody, patchStatus, err := c.do(ctx, http.MethodPatch, profilePath,
