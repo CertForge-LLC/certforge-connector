@@ -38,8 +38,10 @@ import (
 )
 
 const (
-	csrWorkName   = "certforge-renewal" // working CSR object name on device; deleted after download
-	chainWorkName = "certforge-chain"   // chain cert object name on device; updated on each renewal
+	csrWorkName       = "certforge-renewal" // working CSR object name on device; deleted after download
+	chainWorkName     = "certforge-chain"   // chain cert object name on device; updated on each renewal
+	managedCertName   = "certforge"         // cert object installed/updated by CertForge
+	managedKeyName    = "certforge"         // key object installed/updated by CertForge
 )
 
 // Client connects to a single F5 BIG-IP via iControl REST.
@@ -429,20 +431,22 @@ func (c *Client) GenerateCSR(ctx context.Context, subject device.CertSubject) (s
 // --- InstallPrivateKey implements device.PrivateKeyInstaller ---
 
 // InstallPrivateKey uploads a PEM-encoded private key to the BIG-IP and installs
-// it under the same name as the existing key of the target client-ssl profile, so
-// the profile picks it up without any reconfiguration. Called by the worker before
-// InstallCert when the key was generated externally (ACME SAN flow).
+// it as a new managed object named managedKeyName (/Common/certforge). Using a
+// dedicated name avoids the access-denied error that occurs when trying to
+// overwrite protected system keys such as /Common/default.key.
+// InstallCert is responsible for patching the client-ssl profile to reference
+// the new key after the cert is installed.
 func (c *Client) InstallPrivateKey(ctx context.Context, keyPEM string) error {
 	profile, err := c.targetProfile(ctx)
 	if err != nil {
 		return err
 	}
-	_, keyName, partition, err := certKeyNames(profile)
+	_, _, partition, err := certKeyNames(profile)
 	if err != nil {
 		return err
 	}
 
-	fileName := keyName + ".key"
+	fileName := managedKeyName + ".key"
 	uploadBody, uploadStatus, err := c.upload(ctx,
 		"/mgmt/shared/file-transfer/uploads/"+fileName,
 		[]byte(keyPEM))
@@ -455,7 +459,7 @@ func (c *Client) InstallPrivateKey(ctx context.Context, keyPEM string) error {
 
 	installBody, installStatus, err := c.postJSON(ctx, "/mgmt/tm/sys/crypto/key", map[string]string{
 		"command":         "install",
-		"name":            fmt.Sprintf("/%s/%s", partition, keyName),
+		"name":            fmt.Sprintf("/%s/%s", partition, managedKeyName),
 		"from-local-file": fmt.Sprintf("/var/config/rest/downloads/%s", fileName),
 	})
 	if err != nil {
@@ -470,22 +474,24 @@ func (c *Client) InstallPrivateKey(ctx context.Context, keyPEM string) error {
 // --- InstallCert implements device.Device ---
 
 // InstallCert uploads the signed leaf certificate to the BIG-IP and installs it
-// under the same name as the existing cert, so the SSL profile picks it up without
-// any profile reconfiguration. Only the leaf cert is sent here; the signing chain
-// is handled separately by InstallTrustedRoot.
+// as a new managed object named managedCertName (/Common/certforge). After the cert
+// is installed, it patches the client-ssl profile to reference both the new cert and
+// the new key (installed earlier by InstallPrivateKey), so the profile is wired to
+// the CertForge-managed objects without touching protected system files.
+// Only the leaf cert is sent here; the signing chain is handled by InstallTrustedRoot.
 func (c *Client) InstallCert(ctx context.Context, certPEM string) error {
 	profile, err := c.targetProfile(ctx)
 	if err != nil {
 		return err
 	}
 
-	certName, _, partition, err := certKeyNames(profile)
+	_, _, partition, err := certKeyNames(profile)
 	if err != nil {
 		return err
 	}
 
 	// BIG-IP's cert install endpoint expects a single certificate — extract the leaf.
-	fileName := certName + ".crt"
+	fileName := managedCertName + ".crt"
 	uploadBody, uploadStatus, err := c.upload(ctx,
 		"/mgmt/shared/file-transfer/uploads/"+fileName,
 		[]byte(pemLeaf(certPEM)))
@@ -496,10 +502,10 @@ func (c *Client) InstallCert(ctx context.Context, certPEM string) error {
 		return fmt.Errorf("f5: upload cert: HTTP %d: %s", uploadStatus, uploadBody)
 	}
 
-	// Install the uploaded cert under the existing cert name.
+	// Install the uploaded cert under the managed cert name.
 	installBody, installStatus, err := c.postJSON(ctx, "/mgmt/tm/sys/crypto/cert", map[string]string{
 		"command":         "install",
-		"name":            fmt.Sprintf("/%s/%s", partition, certName),
+		"name":            fmt.Sprintf("/%s/%s", partition, managedCertName),
 		"from-local-file": fmt.Sprintf("/var/config/rest/downloads/%s", fileName),
 	})
 	if err != nil {
@@ -507,6 +513,24 @@ func (c *Client) InstallCert(ctx context.Context, certPEM string) error {
 	}
 	if installStatus != http.StatusOK && installStatus != http.StatusCreated {
 		return fmt.Errorf("f5: install cert: HTTP %d: %s", installStatus, installBody)
+	}
+
+	// Patch the client-ssl profile to reference the new managed cert and key.
+	// This wires the profile away from the old (possibly write-protected) system objects.
+	certRef := fmt.Sprintf("/%s/%s.crt", partition, managedCertName)
+	keyRef := fmt.Sprintf("/%s/%s.key", partition, managedKeyName)
+	profilePath := fmt.Sprintf("/mgmt/tm/ltm/profile/client-ssl/~%s~%s", partition, profile.Name)
+	patchData, _ := json.Marshal(map[string]string{
+		"cert": certRef,
+		"key":  keyRef,
+	})
+	patchBody, patchStatus, err := c.do(ctx, http.MethodPatch, profilePath,
+		bytes.NewReader(patchData), "application/json")
+	if err != nil {
+		return fmt.Errorf("f5: patch profile cert/key: %w", err)
+	}
+	if patchStatus != http.StatusOK {
+		return fmt.Errorf("f5: patch profile cert/key: HTTP %d: %s", patchStatus, patchBody)
 	}
 	return nil
 }
