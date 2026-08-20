@@ -797,7 +797,11 @@ func (w *Worker) signLocally(ctx context.Context, jobID, csrPEM string) (string,
 
 		localCA, ok := w.localCAs[auth.CAConnectorID]
 		if !ok {
-			return "", fmt.Errorf("CertForge authorized ca_connector_id=%s but no local CA with that ID is configured - add it to private_cas in connector.yaml", auth.CAConnectorID)
+			// This connector doesn't hold the key for the approved CA connector.
+			// Delegate to the server-mediated sign-request path: submit the CSR to
+			// CertForge and let the CA connector that does hold the key pick it up.
+			log.Printf("[connector] job %s: server approved ca_connector_id=%s — key not held locally, delegating to server sign-request path", jobID, auth.CAConnectorID)
+			return "", errUseSubmitCSR
 		}
 
 		log.Printf("[connector] job %s: signing with governed local CA ca_connector_id=%s validity=%dd dtp=%s", jobID, auth.CAConnectorID, auth.ValidityDays, auth.DTPID)
