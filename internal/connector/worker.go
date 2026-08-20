@@ -574,10 +574,39 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 		return nil
 	}
 
-	// Cert-query jobs: TLS-read the device cert and report back; no CSR/install.
+	// Cert-query jobs: read the device cert and report back; no CSR/install.
+	// Prefer the device driver's CertReader (e.g. F5 REST API reads the managed
+	// profile cert, not the management-port self-signed cert). Fall back to a raw
+	// TLS dial if no credentials are available or the driver doesn't implement ReadCert.
 	if j.Status == "pending_query" {
 		log.Printf("[connector] job %s: querying cert on %s (%s:%d)", j.ID, j.DeviceName, j.Host, j.Port)
-		w.reportOneCert(j.DeviceID, j.Host, j.Port, j.SkipVerify)
+		queryCfg := DeviceConfig{
+			ID:         j.DeviceID,
+			Type:       j.DeviceType,
+			Host:       j.Host,
+			Port:       j.Port,
+			TLSContext: j.TLSContext,
+			SkipVerify: j.SkipVerify,
+			Username:   j.Username,
+			Password:   j.Password,
+		}
+		if yd := w.cfg.DeviceByID(j.DeviceID); yd != nil {
+			if queryCfg.Username == "" {
+				queryCfg.Username = yd.Username
+			}
+			if queryCfg.Password == "" {
+				queryCfg.Password = yd.Password
+			}
+		}
+		if queryCfg.Username != "" && queryCfg.Password != "" {
+			if drv, drvErr := queryCfg.NewDevice(); drvErr == nil {
+				w.reportOneCertViaDevice(ctx, j.DeviceID, j.Host, j.Port, j.SkipVerify, drv)
+			} else {
+				w.reportOneCert(j.DeviceID, j.Host, j.Port, j.SkipVerify)
+			}
+		} else {
+			w.reportOneCert(j.DeviceID, j.Host, j.Port, j.SkipVerify)
+		}
 		if err := w.client.MarkDone(j.ID, ""); err != nil {
 			log.Printf("[connector] job %s: mark done failed: %v", j.ID, err)
 		}
