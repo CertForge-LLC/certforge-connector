@@ -640,8 +640,9 @@ func (c *Client) ReadCert(ctx context.Context) (*device.CertInfo, error) {
 	var resp struct {
 		CommonName string `json:"commonName"`
 		// expirationDate is a string like "Nov 18 18:33:14 2026 GMT"
-		ExpirationDate string   `json:"expirationDate"`
-		SANs           []string `json:"subjectAlternativeName"` // may be absent
+		ExpirationDate string `json:"expirationDate"`
+		// subjectAlternativeName is a single space-separated string: "DNS:f5.faltys.com DNS:www.f5.faltys.com"
+		SANString string `json:"subjectAlternativeName"`
 	}
 	if err := json.Unmarshal([]byte(body), &resp); err != nil {
 		return nil, fmt.Errorf("f5: read cert: parse: %w", err)
@@ -657,9 +658,15 @@ func (c *Client) ReadCert(ctx context.Context) (*device.CertInfo, error) {
 		}
 	}
 
+	// Split the SAN string into individual entries, stripping the "DNS:" prefix.
+	var sans []string
+	for _, s := range strings.Fields(resp.SANString) {
+		sans = append(sans, strings.TrimPrefix(s, "DNS:"))
+	}
+
 	return &device.CertInfo{
 		CN:       resp.CommonName,
-		SANs:     resp.SANs,
+		SANs:     sans,
 		NotAfter: notAfter.UTC().Format(time.RFC3339),
 	}, nil
 }
