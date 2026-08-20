@@ -107,9 +107,22 @@ func (d *DeviceConfig) NewDevice() (device.Device, error) {
 	}
 }
 
+// LoadConfig reads the YAML config at path, expanding environment variables.
+// If path does not exist AND CERTFORGE_URL + CERTFORGE_API_KEY are set in the
+// environment, a minimal in-memory config is returned without requiring a file.
+// This allows container deployments that pass everything via environment variables:
+//
+//	docker run -e CERTFORGE_URL=https://... -e CERTFORGE_API_KEY=cc_... ghcr.io/certforge/certforge-connector:latest
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
+		// If the file is simply missing, try falling back to environment variables
+		// so the connector can run in containers without any mounted config file.
+		if os.IsNotExist(err) {
+			if cfg := loadConfigFromEnv(); cfg != nil {
+				return cfg, nil
+			}
+		}
 		return nil, fmt.Errorf("read config %s: %w", path, err)
 	}
 	data = []byte(os.ExpandEnv(string(data)))
@@ -118,6 +131,39 @@ func LoadConfig(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	return validateConfig(&cfg)
+}
+
+// loadConfigFromEnv builds a minimal Config from well-known environment variables.
+// Returns nil when CERTFORGE_URL or CERTFORGE_API_KEY are not set.
+//
+// Supported variables:
+//
+//	CERTFORGE_URL         — CertForge instance URL (required)
+//	CERTFORGE_API_KEY     — connector API key (required)
+//	CERTFORGE_POLL        — poll interval, e.g. "30s" (optional, default 30s)
+//	CERTFORGE_CONNECTOR_ID — connector agent record ID (optional)
+func loadConfigFromEnv() *Config {
+	u := os.Getenv("CERTFORGE_URL")
+	k := os.Getenv("CERTFORGE_API_KEY")
+	if u == "" || k == "" {
+		return nil
+	}
+	cfg := &Config{
+		CertForgeURL: u,
+		APIKey:       k,
+		ConnectorID:  os.Getenv("CERTFORGE_CONNECTOR_ID"),
+		PollInterval: 30 * time.Second,
+	}
+	if p := os.Getenv("CERTFORGE_POLL"); p != "" {
+		if d, err := time.ParseDuration(p); err == nil {
+			cfg.PollInterval = d
+		}
+	}
+	return cfg
+}
+
+func validateConfig(cfg *Config) (*Config, error) {
 	if cfg.CertForgeURL == "" {
 		return nil, fmt.Errorf("certforge_url is required")
 	}
@@ -137,7 +183,7 @@ func LoadConfig(path string) (*Config, error) {
 			cfg.Devices[i].Port = 443
 		}
 	}
-	return &cfg, nil
+	return cfg, nil
 }
 
 func (c *Config) DeviceByID(id string) *DeviceConfig {
