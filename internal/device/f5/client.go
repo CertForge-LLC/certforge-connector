@@ -517,8 +517,10 @@ func (c *Client) InstallCert(ctx context.Context, certPEM string) error {
 
 	// Patch the client-ssl profile to reference the new managed cert and key.
 	// This wires the profile away from the old (possibly write-protected) system objects.
-	certRef := fmt.Sprintf("/%s/%s.crt", partition, managedCertName)
-	keyRef := fmt.Sprintf("/%s/%s.key", partition, managedKeyName)
+	// BIG-IP crypto objects are stored without file extensions in the API — the install
+	// command uses name=/Common/certforge, so the object is /Common/certforge (not .crt/.key).
+	certRef := fmt.Sprintf("/%s/%s", partition, managedCertName)
+	keyRef := fmt.Sprintf("/%s/%s", partition, managedKeyName)
 	profilePath := fmt.Sprintf("/mgmt/tm/ltm/profile/client-ssl/~%s~%s", partition, profile.Name)
 	patchData, _ := json.Marshal(map[string]string{
 		"cert": certRef,
