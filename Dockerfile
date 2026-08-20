@@ -1,9 +1,10 @@
 FROM golang:1.26-alpine AS builder
+ARG VERSION=dev
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-w -s" -o /certforge-connector .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-w -s -X main.Version=${VERSION}" -o /certforge-connector .
 
 FROM scratch
 COPY --from=builder /certforge-connector /certforge-connector
