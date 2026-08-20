@@ -639,22 +639,24 @@ func (c *Client) ReadCert(ctx context.Context) (*device.CertInfo, error) {
 
 	var resp struct {
 		CommonName string `json:"commonName"`
-		// expiration is a string like "Nov 18 18:33:14 2026 GMT"
-		ExpirationDate string `json:"expiration"`
 		// subjectAlternativeName is a single space-separated string: "DNS:f5.faltys.com DNS:www.f5.faltys.com"
-		SANString string `json:"subjectAlternativeName"`
+		SANString    string `json:"subjectAlternativeName"`
+		// expiration lives inside apiRawValues, not at the top level
+		APIRawValues struct {
+			Expiration string `json:"expiration"` // "Nov 18 18:33:14 2026 GMT"
+		} `json:"apiRawValues"`
 	}
 	if err := json.Unmarshal([]byte(body), &resp); err != nil {
 		return nil, fmt.Errorf("f5: read cert: parse: %w", err)
 	}
 
 	// Parse the F5 expiration string into RFC3339.
-	notAfter, err := time.Parse("Jan _2 15:04:05 2006 MST", resp.ExpirationDate)
+	notAfter, err := time.Parse("Jan _2 15:04:05 2006 MST", resp.APIRawValues.Expiration)
 	if err != nil {
 		// Try zero-padded day variant.
-		notAfter, err = time.Parse("Jan 02 15:04:05 2006 MST", resp.ExpirationDate)
+		notAfter, err = time.Parse("Jan 02 15:04:05 2006 MST", resp.APIRawValues.Expiration)
 		if err != nil {
-			return nil, fmt.Errorf("f5: read cert: parse expiry %q: %w", resp.ExpirationDate, err)
+			return nil, fmt.Errorf("f5: read cert: parse expiry %q: %w", resp.APIRawValues.Expiration, err)
 		}
 	}
 
