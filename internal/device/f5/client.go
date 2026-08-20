@@ -21,7 +21,11 @@ package f5
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -29,6 +33,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/certforge/certforge-connector/internal/device"
 )
 
 const (
@@ -352,6 +358,113 @@ func (c *Client) PullCSR(ctx context.Context) (string, error) {
 	_ = c.deleteCSR(ctx, partition, csrWorkName)
 
 	return p, nil
+}
+
+// --- GenerateCSR implements device.CSRGenerator ---
+
+// GenerateCSR tries to generate a CSR from the device's existing private key via
+// iControl REST. On BIG-IP systems without an LTM licence the /sys/crypto/csr
+// endpoint returns HTTP 403; in that case a local placeholder CSR is generated so
+// the worker can continue. Because F5 also implements PrivateKeyInstaller the
+// worker will override this CSR with an externally-generated key+CSR (connector
+// side, with DNS SANs) and call InstallPrivateKey before InstallCert — so the
+// exact CSR returned here is not used for signing.
+func (c *Client) GenerateCSR(ctx context.Context, subject device.CertSubject) (string, error) {
+	profile, err := c.targetProfile(ctx)
+	if err != nil {
+		return "", err
+	}
+	_, keyName, partition, err := certKeyNames(profile)
+	if err != nil {
+		return "", err
+	}
+
+	cn := subject.CN
+	if cn == "" {
+		cn = c.Host
+	}
+
+	// Attempt device-side CSR generation (reuses the existing private key on BIG-IP,
+	// so the key never leaves the device). This requires an LTM licence.
+	if csrErr := c.generateCSR(ctx, csrWorkName, partition, keyName, cn); csrErr == nil {
+		p, dlErr := c.downloadCSR(ctx, partition, csrWorkName)
+		if dlErr != nil {
+			return "", dlErr
+		}
+		_ = c.deleteCSR(ctx, partition, csrWorkName)
+		return p, nil
+	}
+
+	// Device-side generation failed (most likely HTTP 403 — licence required).
+	// Fall back to a locally-generated placeholder CSR. The worker will replace
+	// this with generateExternalCSR because F5 also implements PrivateKeyInstaller.
+	key, keyErr := rsa.GenerateKey(rand.Reader, 2048)
+	if keyErr != nil {
+		return "", fmt.Errorf("f5: local CSR fallback: %w", keyErr)
+	}
+	subj := pkix.Name{CommonName: cn}
+	if subject.O != "" {
+		subj.Organization = []string{subject.O}
+	}
+	if subject.OU != "" {
+		subj.OrganizationalUnit = []string{subject.OU}
+	}
+	if subject.L != "" {
+		subj.Locality = []string{subject.L}
+	}
+	if subject.ST != "" {
+		subj.Province = []string{subject.ST}
+	}
+	if subject.C != "" {
+		subj.Country = []string{subject.C}
+	}
+	tmpl := &x509.CertificateRequest{Subject: subj, DNSNames: subject.SANs}
+	csrDER, err := x509.CreateCertificateRequest(rand.Reader, tmpl, key)
+	if err != nil {
+		return "", fmt.Errorf("f5: local CSR fallback: create CSR: %w", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})), nil
+}
+
+// --- InstallPrivateKey implements device.PrivateKeyInstaller ---
+
+// InstallPrivateKey uploads a PEM-encoded private key to the BIG-IP and installs
+// it under the same name as the existing key of the target client-ssl profile, so
+// the profile picks it up without any reconfiguration. Called by the worker before
+// InstallCert when the key was generated externally (ACME SAN flow).
+func (c *Client) InstallPrivateKey(ctx context.Context, keyPEM string) error {
+	profile, err := c.targetProfile(ctx)
+	if err != nil {
+		return err
+	}
+	_, keyName, partition, err := certKeyNames(profile)
+	if err != nil {
+		return err
+	}
+
+	fileName := keyName + ".key"
+	uploadBody, uploadStatus, err := c.upload(ctx,
+		"/mgmt/shared/file-transfer/uploads/"+fileName,
+		[]byte(keyPEM))
+	if err != nil {
+		return fmt.Errorf("f5: upload key: %w", err)
+	}
+	if uploadStatus != http.StatusOK && uploadStatus != http.StatusNoContent {
+		return fmt.Errorf("f5: upload key: HTTP %d: %s", uploadStatus, uploadBody)
+	}
+
+	installBody, installStatus, err := c.postJSON(ctx, "/mgmt/tm/sys/crypto/key", map[string]string{
+		"command":         "install",
+		"name":            fmt.Sprintf("/%s/%s", partition, keyName),
+		"from-local-file": fmt.Sprintf("/var/config/rest/downloads/%s", fileName),
+	})
+	if err != nil {
+		return fmt.Errorf("f5: install key: %w", err)
+	}
+	if installStatus != http.StatusOK && installStatus != http.StatusCreated {
+		return fmt.Errorf("f5: install key: HTTP %d: %s", installStatus, installBody)
+	}
+	return nil
 }
 
 // --- InstallCert implements device.Device ---
