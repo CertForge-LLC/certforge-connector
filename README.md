@@ -28,6 +28,7 @@ The connector is stateless between jobs. If it stops, devices simply do not rene
 |------|--------|
 | AudioCodes Mediant (VE/E/SW/HW) | `audiocodes` |
 | F5 BIG-IP (iControl REST, TMOS 11.6+) | `f5` |
+| Ribbon SWe-Lite SBC (REST API) | `ribbon` |
 
 Additional drivers can be added by implementing the [`Device` interface](#adding-a-device-type).
 
@@ -414,7 +415,7 @@ case "myvendor":
 
 ```go
 func SupportedDeviceTypes() []string {
-    return []string{"audiocodes", "myvendor"}
+    return []string{"audiocodes", "f5", "ribbon", "myvendor"}
 }
 ```
 
