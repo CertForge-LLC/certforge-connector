@@ -7,7 +7,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: certforge/certforge-connector
+  IMAGE_NAME: certforge-llc/certforge-connector
 
 jobs:
   release:
