@@ -610,6 +610,60 @@ func (c *Client) InstallTrustedRoot(ctx context.Context, caPEM string) error {
 	return nil
 }
 
+// --- ReadCert implements device.CertReader ---
+
+// ReadCert reads the certificate installed on the managed client-ssl profile via
+// the BIG-IP REST API instead of TLS-dialing the management port. This ensures
+// the connector reports the correct cert (e.g. /Common/certforge) rather than
+// the management interface's self-signed certificate.
+func (c *Client) ReadCert(ctx context.Context) (*device.CertInfo, error) {
+	profile, err := c.targetProfile(ctx)
+	if err != nil {
+		return nil, err
+	}
+	certName, _, partition, err := certKeyNames(profile)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fetch the cert object from the BIG-IP crypto store.
+	body, status, err := c.do(ctx, http.MethodGet,
+		fmt.Sprintf("/mgmt/tm/sys/crypto/cert/~%s~%s", partition, certName),
+		nil, "")
+	if err != nil {
+		return nil, fmt.Errorf("f5: read cert: %w", err)
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("f5: read cert: HTTP %d: %s", status, body)
+	}
+
+	var resp struct {
+		CommonName string `json:"commonName"`
+		// expirationDate is a string like "Nov 18 18:33:14 2026 GMT"
+		ExpirationDate string   `json:"expirationDate"`
+		SANs           []string `json:"subjectAlternativeName"` // may be absent
+	}
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		return nil, fmt.Errorf("f5: read cert: parse: %w", err)
+	}
+
+	// Parse the F5 expiration string into RFC3339.
+	notAfter, err := time.Parse("Jan _2 15:04:05 2006 MST", resp.ExpirationDate)
+	if err != nil {
+		// Try zero-padded day variant.
+		notAfter, err = time.Parse("Jan 02 15:04:05 2006 MST", resp.ExpirationDate)
+		if err != nil {
+			return nil, fmt.Errorf("f5: read cert: parse expiry %q: %w", resp.ExpirationDate, err)
+		}
+	}
+
+	return &device.CertInfo{
+		CN:       resp.CommonName,
+		SANs:     resp.SANs,
+		NotAfter: notAfter.UTC().Format(time.RFC3339),
+	}, nil
+}
+
 // Ping verifies connectivity and credentials by listing client-ssl profiles.
 func (c *Client) Ping(ctx context.Context) error {
 	_, err := c.ListClientSSLProfiles(ctx)

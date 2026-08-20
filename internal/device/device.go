@@ -63,3 +63,19 @@ type PrivateKeyInstaller interface {
 type ConfigSaver interface {
 	SaveConfiguration(ctx context.Context) error
 }
+
+// CertInfo holds the parsed details of a certificate read from a device.
+type CertInfo struct {
+	CN      string
+	SANs    []string
+	NotAfter  string // RFC3339
+}
+
+// CertReader is an optional interface for device drivers that can read their
+// currently-installed certificate via API rather than a raw TLS dial. When
+// implemented, the connector calls ReadCert instead of TLS-dialing the device
+// host:port, which is useful when the management port presents a different cert
+// than the one being managed (e.g. F5 iControl REST on 8443 vs an LTM profile).
+type CertReader interface {
+	ReadCert(ctx context.Context) (*CertInfo, error)
+}

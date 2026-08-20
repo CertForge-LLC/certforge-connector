@@ -397,6 +397,36 @@ func (w *Worker) reportCurrentCerts(ctx context.Context) {
 			log.Printf("[connector] device %s (%s): disabled in CertForge - skipping", d.ID, d.Host)
 			continue
 		}
+		// Try to instantiate the driver so devices that implement CertReader can
+		// report the cert from their managed profile via API rather than TLS-dialing
+		// the management port (which may present a different cert).
+		cfg := DeviceConfig{
+			ID:         d.ID,
+			Type:       d.Type,
+			Host:       d.Host,
+			Port:       d.Port,
+			TLSContext: d.TLSContext,
+			SkipVerify: d.SkipVerify,
+			Username:   d.Username,
+			Password:   d.Password,
+		}
+		if yamlDev := w.cfg.DeviceByID(d.ID); yamlDev != nil {
+			if cfg.Username == "" {
+				cfg.Username = yamlDev.Username
+			}
+			if cfg.Password == "" {
+				cfg.Password = yamlDev.Password
+			}
+			if yamlDev.SkipVerify {
+				cfg.SkipVerify = true
+			}
+		}
+		if cfg.Username != "" && cfg.Password != "" {
+			if drv, err := cfg.NewDevice(); err == nil {
+				w.reportOneCertViaDevice(ctx, d.ID, d.Host, d.Port, d.SkipVerify, drv)
+				continue
+			}
+		}
 		w.reportOneCert(d.ID, d.Host, d.Port, d.SkipVerify)
 	}
 }
@@ -415,6 +445,35 @@ func (w *Worker) reportOneCert(deviceID, host string, port int, skipVerify bool)
 		return
 	}
 	log.Printf("[connector] cert-report %s: cn=%q not_after=%s", deviceID, info.CN, info.NotAfter.Format("2006-01-02"))
+}
+
+// reportOneCertViaDevice uses the device's CertReader interface (if implemented)
+// to read the managed cert via API rather than TLS-dialing the management port.
+// Falls back to reportOneCert if the device doesn't implement CertReader or the
+// API call fails.
+func (w *Worker) reportOneCertViaDevice(ctx context.Context, deviceID, host string, port int, skipVerify bool, dev device.Device) {
+	cr, ok := dev.(device.CertReader)
+	if !ok {
+		w.reportOneCert(deviceID, host, port, skipVerify)
+		return
+	}
+	di, err := cr.ReadCert(ctx)
+	if err != nil {
+		log.Printf("[connector] cert-read %s: api read failed (%v), falling back to TLS dial", deviceID, err)
+		w.reportOneCert(deviceID, host, port, skipVerify)
+		return
+	}
+	notAfter, _ := time.Parse(time.RFC3339, di.NotAfter)
+	info := CertInfo{
+		CN:       di.CN,
+		SANs:     di.SANs,
+		NotAfter: notAfter,
+	}
+	if err := w.client.ReportCert(deviceID, info); err != nil {
+		log.Printf("[connector] cert-report %s: %v", deviceID, err)
+		return
+	}
+	log.Printf("[connector] cert-report %s: cn=%q not_after=%s (via api)", deviceID, di.CN, notAfter.Format("2006-01-02"))
 }
 
 func (w *Worker) poll(ctx context.Context) {
