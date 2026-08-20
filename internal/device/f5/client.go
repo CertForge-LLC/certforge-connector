@@ -446,6 +446,19 @@ func (c *Client) InstallPrivateKey(ctx context.Context, keyPEM string) error {
 		return err
 	}
 
+	// If the profile already references our managed objects from a prior install,
+	// BIG-IP will reject the new key because it doesn't match the old managed cert.
+	// Temporarily point the profile at the system default cert/key to break the
+	// coupling. InstallCert will re-patch to /Common/certforge when both new
+	// objects are in place.
+	profilePath := fmt.Sprintf("/mgmt/tm/ltm/profile/client-ssl/~%s~%s", partition, profile.Name)
+	resetData, _ := json.Marshal(map[string]string{
+		"cert": fmt.Sprintf("/%s/default.crt", partition),
+		"key":  fmt.Sprintf("/%s/default.key", partition),
+	})
+	// Best-effort: first install won't need this; subsequent renewals will.
+	_, _, _ = c.do(ctx, http.MethodPatch, profilePath, bytes.NewReader(resetData), "application/json")
+
 	fileName := managedKeyName + ".key"
 	uploadBody, uploadStatus, err := c.upload(ctx,
 		"/mgmt/shared/file-transfer/uploads/"+fileName,
