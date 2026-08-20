@@ -639,8 +639,8 @@ func (c *Client) ReadCert(ctx context.Context) (*device.CertInfo, error) {
 
 	var resp struct {
 		CommonName string `json:"commonName"`
-		// expirationDate is a string like "Nov 18 18:33:14 2026 GMT"
-		ExpirationDate string `json:"expirationDate"`
+		// expiration is a string like "Nov 18 18:33:14 2026 GMT"
+		ExpirationDate string `json:"expiration"`
 		// subjectAlternativeName is a single space-separated string: "DNS:f5.faltys.com DNS:www.f5.faltys.com"
 		SANString string `json:"subjectAlternativeName"`
 	}
