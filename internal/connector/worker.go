@@ -503,6 +503,11 @@ func (w *Worker) poll(ctx context.Context) {
 		log.Printf("[connector] poll error: %v", err)
 		return
 	}
+	if len(jobs) == 0 {
+		log.Printf("[connector] poll: ok, no pending jobs")
+		return
+	}
+	log.Printf("[connector] poll: %d job(s) to process", len(jobs))
 	for _, j := range jobs {
 		if err := w.executeJob(ctx, j); err != nil {
 			log.Printf("[connector] job %s (%s): %v", j.ID, j.DeviceName, err)
