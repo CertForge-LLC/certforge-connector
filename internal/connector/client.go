@@ -273,9 +273,10 @@ func (c *Client) AuthorizeLocalSigning(jobID, cn string, sans []string, keyAlgor
 // SignRequest is a pending approval-flow signing request returned by CertForge.
 // The connector generates a cert by signing the CSR with its local CA, then calls SubmitSignRequest.
 type SignRequest struct {
-	ID      string `json:"id"`
-	Domains string `json:"domains"`
-	CSRPEM  string `json:"csr_pem"`
+	ID           string `json:"id"`
+	Domains      string `json:"domains"`
+	CSRPEM       string `json:"csr_pem"`
+	ValidityDays int    `json:"validity_days,omitempty"` // 0 = use connector default (ca.validDays)
 }
 
 // GetSignRequests returns pending CSR signing requests for the given CA connector.

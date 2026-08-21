@@ -864,8 +864,12 @@ func (w *Worker) pollSignRequests() {
 			continue
 		}
 		for _, req := range reqs {
-			log.Printf("[connector] sign-request %s: signing for %s", req.ID, req.Domains)
-			certPEM, err := ca.SignCSR(req.CSRPEM, ca.validDays, nil) // no subject template for approval-flow requests
+			validity := ca.validDays
+			if req.ValidityDays > 0 {
+				validity = req.ValidityDays // honour the issuance profile validity from the DTP
+			}
+			log.Printf("[connector] sign-request %s: signing for %s (validity=%dd)", req.ID, req.Domains, validity)
+			certPEM, err := ca.SignCSR(req.CSRPEM, validity, nil) // no subject template for approval-flow requests
 			if err != nil {
 				log.Printf("[connector] sign-request %s: sign CSR: %v", req.ID, err)
 				continue
