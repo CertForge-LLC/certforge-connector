@@ -295,12 +295,20 @@ func (c *Client) SubmitSignRequest(connectorID, reqID, certPEM string) error {
 	return c.post("/api/v1/connector/ca-connectors/"+connectorID+"/sign-requests/"+reqID+"/submit", body, nil)
 }
 
+// RegisterCapabilitiesResult is returned by RegisterCapabilities.
+// PollIntervalSeconds is non-zero only when the platform has overridden the
+// connector's local poll_interval setting; 0 means "keep using local config".
+type RegisterCapabilitiesResult struct {
+	PollIntervalSeconds int `json:"poll_interval_seconds"`
+}
+
 // RegisterCapabilities tells CertForge which device driver types this connector supports.
 // Called on startup and periodically; CertForge uses the list to populate the device-type
 // dropdown in the UI so users never have to type a type name by hand.
 // connectorIDs lists all CA connector record IDs this process is driving; CertForge
 // checks each one and returns 403 if any are disabled.
-func (c *Client) RegisterCapabilities(deviceTypes []string, connectorIDs []string, backendVersions map[string]string, version string) error {
+// Returns a RegisterCapabilitiesResult that may carry a server-delivered poll interval.
+func (c *Client) RegisterCapabilities(deviceTypes []string, connectorIDs []string, backendVersions map[string]string, version string) (RegisterCapabilitiesResult, error) {
 	payload := map[string]any{
 		"device_types":     deviceTypes,
 		"connector_ids":    connectorIDs,
@@ -308,7 +316,11 @@ func (c *Client) RegisterCapabilities(deviceTypes []string, connectorIDs []strin
 		"version":          version,
 	}
 	body, _ := json.Marshal(payload)
-	return c.post("/api/v1/connector/capabilities", body, nil)
+	var result RegisterCapabilitiesResult
+	if err := c.post("/api/v1/connector/capabilities", body, &result); err != nil {
+		return RegisterCapabilitiesResult{}, err
+	}
+	return result, nil
 }
 
 // ReportDeviceInfo sends device metadata (software/firmware version) to CertForge.
