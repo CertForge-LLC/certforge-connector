@@ -301,11 +301,40 @@ func (c *Client) InstallCert(_ context.Context, certPEM string) error {
 }
 
 // installServerCert pushes the cached server cert PEM to certificate slot 1.
+// It first tries the full chain bundle (leaf + intermediates); if the device
+// returns 15020 (chain verification failed — typically because an anchor root
+// is in the trust store but the ECDSA cross-sign path can't be followed), it
+// retries with just the leaf cert. When the intermediate and root are already
+// loaded into slots 2+ the device can verify the leaf alone.
 func (c *Client) installServerCert(ctx context.Context) error {
+	if err := c.doInstallServerCert(ctx, c.pendingCert, "server.pem"); err != nil {
+		// 15020 = X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT — the bundled chain can't
+		// be anchored (often an ECDSA cross-sign the device firmware doesn't follow).
+		// Retry with just the leaf cert; if the intermediate and root are already in
+		// the trusted-CA slots the device can complete verification without the chain.
+		if strings.Contains(err.Error(), "15020") {
+			log.Printf("[ribbon] server cert chain verify failed (15020) on %s — retrying with leaf-only PEM", c.Host)
+			leaf := extractLeafPEM(c.pendingCert)
+			if leaf != "" {
+				if err2 := c.doInstallServerCert(ctx, leaf, "server-leaf.pem"); err2 == nil {
+					log.Printf("[ribbon] certificate installed on %s (leaf-only fallback)", c.Host)
+					c.pendingCert = ""
+					return nil
+				}
+			}
+		}
+		return err
+	}
+	log.Printf("[ribbon] certificate installed on %s", c.Host)
+	c.pendingCert = ""
+	return nil
+}
+
+func (c *Client) doInstallServerCert(ctx context.Context, certPEM, filename string) error {
 	vals := url.Values{
 		"CertFileOperation": {"1"}, // certOperationCopyAndPaste
-		"CertFileContent":   {c.pendingCert},
-		"CertFileName":      {"server.pem"},
+		"CertFileContent":   {certPEM},
+		"CertFileName":      {filename},
 	}
 	b, status, err := c.do(ctx, http.MethodPost, "/certificate/1?action=import",
 		strings.NewReader(vals.Encode()), "application/x-www-form-urlencoded")
@@ -318,9 +347,16 @@ func (c *Client) installServerCert(ctx context.Context) error {
 	if _, err := checkStatus(b); err != nil {
 		return fmt.Errorf("ribbon: InstallCert: %w", err)
 	}
-	log.Printf("[ribbon] certificate installed on %s", c.Host)
-	c.pendingCert = ""
 	return nil
+}
+
+// extractLeafPEM returns the first PEM block from a certificate bundle (the leaf cert).
+func extractLeafPEM(bundle string) string {
+	block, _ := pem.Decode([]byte(strings.TrimSpace(bundle)))
+	if block == nil {
+		return ""
+	}
+	return strings.TrimSpace(string(pem.EncodeToMemory(block)))
 }
 
 // InstallTrustedRoot uploads the CA chain into the device trust store (slots 2, 3, …),
