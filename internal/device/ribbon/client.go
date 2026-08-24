@@ -18,6 +18,7 @@ package ribbon
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/pem"
 	"encoding/xml"
 	"fmt"
@@ -301,33 +302,80 @@ func (c *Client) InstallCert(_ context.Context, certPEM string) error {
 }
 
 // installServerCert pushes the cached server cert PEM to certificate slot 1.
-// It first tries the full chain bundle (leaf + intermediates); if the device
-// returns 15020 (chain verification failed — typically because an anchor root
-// is in the trust store but the ECDSA cross-sign path can't be followed), it
-// retries with just the leaf cert. When the intermediate and root are already
-// loaded into slots 2+ the device can verify the leaf alone.
+//
+// Ribbon firmware validates the bundled chain during import (slot-1 POST).
+// The validation anchors against the firmware's built-in trust store only —
+// it does NOT consult the custom trusted-CA slots (2, 3, …). Root certificates
+// (self-signed, e.g. ISRG Root X1) that are not in the firmware's built-in
+// store cause a "15020 unable_to_get_issuer_cert" failure when included in
+// the bundle, because the firmware cannot anchor them.
+//
+// Strategy (three attempts, most→least chain, stopping at first success):
+//  1. Leaf + RSA intermediates only (no self-signed roots). The intermediates
+//     chain to ISRG Root X1 which the firmware resolves via either its
+//     built-in store or the custom trusted-CA slots populated by InstallTrustedRoot.
+//  2. Leaf only — firmware looks up the whole chain from trusted-CA slots.
+//  3. Full original bundle — last resort, in case stripping roots breaks something.
 func (c *Client) installServerCert(ctx context.Context) error {
-	if err := c.doInstallServerCert(ctx, c.pendingCert, "server.pem"); err != nil {
-		// 15020 = X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT — the bundled chain can't
-		// be anchored (often an ECDSA cross-sign the device firmware doesn't follow).
-		// Retry with just the leaf cert; if the intermediate and root are already in
-		// the trusted-CA slots the device can complete verification without the chain.
-		if strings.Contains(err.Error(), "15020") {
-			log.Printf("[ribbon] server cert chain verify failed (15020) on %s — retrying with leaf-only PEM", c.Host)
-			leaf := extractLeafPEM(c.pendingCert)
-			if leaf != "" {
-				if err2 := c.doInstallServerCert(ctx, leaf, "server-leaf.pem"); err2 == nil {
-					log.Printf("[ribbon] certificate installed on %s (leaf-only fallback)", c.Host)
-					c.pendingCert = ""
-					return nil
-				}
-			}
-		}
-		return err
+	// Attempt 1: leaf + intermediates, no self-signed roots in the bundle.
+	noRoots := filterRootCerts(c.pendingCert)
+	if noRoots != c.pendingCert {
+		log.Printf("[ribbon] strip self-signed roots from bundle before slot-1 import on %s", c.Host)
 	}
-	log.Printf("[ribbon] certificate installed on %s", c.Host)
-	c.pendingCert = ""
-	return nil
+	if err := c.doInstallServerCert(ctx, noRoots, "server.pem"); err == nil {
+		log.Printf("[ribbon] certificate installed on %s", c.Host)
+		c.pendingCert = ""
+		return nil
+	}
+
+	// Attempt 2: leaf only — firmware resolves chain from trusted-CA slots.
+	log.Printf("[ribbon] bundle install failed on %s — retrying with leaf-only PEM", c.Host)
+	if leaf := extractLeafPEM(c.pendingCert); leaf != "" {
+		if err2 := c.doInstallServerCert(ctx, leaf, "server-leaf.pem"); err2 == nil {
+			log.Printf("[ribbon] certificate installed on %s (leaf-only fallback)", c.Host)
+			c.pendingCert = ""
+			return nil
+		}
+	}
+
+	// Attempt 3: original full bundle.
+	log.Printf("[ribbon] leaf-only install failed on %s — retrying with full chain bundle", c.Host)
+	err := c.doInstallServerCert(ctx, c.pendingCert, "server-full.pem")
+	if err == nil {
+		log.Printf("[ribbon] certificate installed on %s (full-bundle fallback)", c.Host)
+		c.pendingCert = ""
+	}
+	return err
+}
+
+// filterRootCerts returns the PEM bundle with self-signed certificates removed.
+// Self-signed certs (Subject == Issuer) are CA root anchors that firmware may
+// reject during slot-1 import because it cannot verify them against its built-in
+// store. Removing them lets the bundled chain terminate at the intermediate,
+// which the firmware can anchor against its built-in or custom trusted-CA roots.
+func filterRootCerts(certPEM string) string {
+	var out strings.Builder
+	rest := []byte(strings.TrimSpace(certPEM))
+	for len(rest) > 0 {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			// Keep unparseable blocks unchanged.
+			out.WriteString(strings.TrimSpace(string(pem.EncodeToMemory(block))) + "\n")
+			continue
+		}
+		// Self-signed: Subject == Issuer (root CA). Skip these.
+		if cert.Subject.String() == cert.Issuer.String() {
+			log.Printf("[ribbon] skipping self-signed root %q in slot-1 bundle", cert.Subject.CommonName)
+			continue
+		}
+		out.WriteString(strings.TrimSpace(string(pem.EncodeToMemory(block))) + "\n")
+	}
+	return strings.TrimSpace(out.String())
 }
 
 func (c *Client) doInstallServerCert(ctx context.Context, certPEM, filename string) error {
