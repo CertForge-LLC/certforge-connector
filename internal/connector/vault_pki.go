@@ -101,6 +101,93 @@ func FetchVaultPKICerts(cfg VaultPKIConfig, scope ConnectorScope) ([]InventoryCe
 	return out, nil
 }
 
+// VaultSignCSR submits a CSR to Vault PKI and returns the signed certificate PEM
+// (leaf + issuing CA chain). It uses the configured role when set; otherwise it
+// calls the sign-verbatim endpoint which does not require a role.
+func VaultSignCSR(cfg VaultPKIConfig, csrPEM string, validityDays int) (string, error) {
+	token := cfg.Token
+	if token == "" {
+		token = os.Getenv("VAULT_TOKEN")
+	}
+	if token == "" {
+		return "", fmt.Errorf("vault_pki: no token - set token in config or VAULT_TOKEN env var")
+	}
+	mount := cfg.Mount
+	if mount == "" {
+		mount = "pki"
+	}
+	addr := strings.TrimRight(cfg.Addr, "/")
+
+	ttl := "8760h" // default 1 year
+	if validityDays > 0 {
+		ttl = fmt.Sprintf("%dh", validityDays*24)
+	}
+
+	endpoint := addr + "/v1/" + mount + "/sign-verbatim"
+	if cfg.Role != "" {
+		endpoint = addr + "/v1/" + mount + "/sign/" + cfg.Role
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"csr":    csrPEM,
+		"ttl":    ttl,
+		"format": "pem",
+	})
+	if err != nil {
+		return "", fmt.Errorf("vault_pki: marshal sign request: %w", err)
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	req, err := http.NewRequest(http.MethodPost, endpoint, strings.NewReader(string(payload)))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("X-Vault-Token", token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("vault_pki: sign request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return "", fmt.Errorf("vault_pki: sign %s: %s %s", endpoint, resp.Status, b)
+	}
+
+	var body struct {
+		Data struct {
+			Certificate string   `json:"certificate"`
+			IssuingCA   string   `json:"issuing_ca"`
+			CAChain     []string `json:"ca_chain"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return "", fmt.Errorf("vault_pki: decode sign response: %w", err)
+	}
+	if body.Data.Certificate == "" {
+		return "", fmt.Errorf("vault_pki: sign response contained no certificate")
+	}
+
+	// Build the full chain: leaf + intermediate(s) + issuing CA.
+	// Use ca_chain when available (covers multi-level intermediates), else issuing_ca.
+	var sb strings.Builder
+	sb.WriteString(strings.TrimSpace(body.Data.Certificate))
+	sb.WriteByte('\n')
+	if len(body.Data.CAChain) > 0 {
+		for _, c := range body.Data.CAChain {
+			sb.WriteByte('\n')
+			sb.WriteString(strings.TrimSpace(c))
+			sb.WriteByte('\n')
+		}
+	} else if body.Data.IssuingCA != "" {
+		sb.WriteByte('\n')
+		sb.WriteString(strings.TrimSpace(body.Data.IssuingCA))
+		sb.WriteByte('\n')
+	}
+	return sb.String(), nil
+}
+
 // vaultListCerts calls LIST /v1/<mount>/certs and returns all serial numbers.
 func vaultListCerts(client *http.Client, addr, mount, token string) ([]string, error) {
 	url := addr + "/v1/" + mount + "/certs"

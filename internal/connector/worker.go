@@ -21,6 +21,12 @@ import (
 	"github.com/certforge/certforge-connector/internal/device"
 )
 
+// vaultCAEntry holds everything needed to sign CSRs via a Vault PKI secrets engine.
+type vaultCAEntry struct {
+	cfg       VaultPKIConfig
+	validDays int
+}
+
 // Worker polls CertForge for device jobs and executes them.
 type Worker struct {
 	cfg      *Config
@@ -29,6 +35,9 @@ type Worker struct {
 	// localCAs maps ca_connector_id → LocalCA for governed local signing (DTP-validated).
 	// Populated from private_cas[] entries (and private_ca if it has a ca_connector_id).
 	localCAs map[string]*LocalCA
+	// vaultCAs maps ca_connector_id → vaultCAEntry for Vault PKI backed signing.
+	// Populated from private_cas[] entries that have vault_pki set but no cert/key files.
+	vaultCAs map[string]vaultCAEntry
 	// legacyCA is no longer used; kept as a nil sentinel to detect misconfigured YAML
 	// entries without ca_connector_id and produce a clear startup error.
 	legacyCA *LocalCA
@@ -43,6 +52,7 @@ func NewWorker(cfg *Config, version string) (*Worker, error) {
 		client:   NewClient(cfg.CertForgeURL, cfg.APIKey),
 		version:  version,
 		localCAs: make(map[string]*LocalCA),
+		vaultCAs: make(map[string]vaultCAEntry),
 	}
 
 	// Collect all private CA configs: private_cas[] + private_ca (backward compat).
@@ -53,6 +63,19 @@ func NewWorker(cfg *Config, version string) (*Worker, error) {
 
 	for _, caCfg := range allCAs {
 		if caCfg.CertFile == "" || caCfg.KeyFile == "" {
+			// No local key files — check for Vault PKI backend.
+			if caCfg.VaultPKI != nil && caCfg.CAConnectorID != "" {
+				vdays := caCfg.ValidityDays
+				if vdays == 0 {
+					vdays = 365
+				}
+				w.vaultCAs[caCfg.CAConnectorID] = vaultCAEntry{cfg: *caCfg.VaultPKI, validDays: vdays}
+				mount := caCfg.VaultPKI.Mount
+				if mount == "" {
+					mount = "pki"
+				}
+				log.Printf("[connector] vault PKI CA loaded: ca_connector_id=%s addr=%s mount=%s validity=%dd (governed)", caCfg.CAConnectorID, caCfg.VaultPKI.Addr, mount, vdays)
+			}
 			continue
 		}
 		ca, err := LoadLocalCA(caCfg)
@@ -150,6 +173,9 @@ func (w *Worker) registerCapabilities() time.Duration {
 	// Collect all CA connector IDs; the server checks each and returns 403 if any are disabled.
 	var ids []string
 	for connID := range w.localCAs {
+		ids = append(ids, connID)
+	}
+	for connID := range w.vaultCAs {
 		ids = append(ids, connID)
 	}
 	if w.cfg.ConnectorID != "" {
@@ -880,11 +906,13 @@ func (w *Worker) signLocally(ctx context.Context, jobID, csrPEM string) (string,
 
 // pollSignRequests checks each configured private CA for pending approval-flow signing
 // requests (created when the CertForge server processes an approval for a private_connector CA).
-// For each request, the connector signs the CSR with the appropriate local CA and posts the cert back.
+// For each request, the connector signs the CSR with the appropriate local CA (or Vault PKI)
+// and posts the cert back.
 func (w *Worker) pollSignRequests() {
 	if w.disabled {
 		return
 	}
+	// File-backed local CAs.
 	for connID, ca := range w.localCAs {
 		reqs, err := w.client.GetSignRequests(connID)
 		if err != nil {
@@ -907,6 +935,31 @@ func (w *Worker) pollSignRequests() {
 				continue
 			}
 			log.Printf("[connector] sign-request %s: complete (%s)", req.ID, req.Domains)
+		}
+	}
+	// Vault PKI backed CAs.
+	for connID, vca := range w.vaultCAs {
+		reqs, err := w.client.GetSignRequests(connID)
+		if err != nil {
+			log.Printf("[connector] sign-requests (vault) %s: %v", connID, err)
+			continue
+		}
+		for _, req := range reqs {
+			validity := vca.validDays
+			if req.ValidityDays > 0 {
+				validity = req.ValidityDays
+			}
+			log.Printf("[connector] sign-request %s: signing via Vault PKI for %s (validity=%dd)", req.ID, req.Domains, validity)
+			certPEM, err := VaultSignCSR(vca.cfg, req.CSRPEM, validity)
+			if err != nil {
+				log.Printf("[connector] sign-request %s: vault sign CSR: %v", req.ID, err)
+				continue
+			}
+			if err := w.client.SubmitSignRequest(connID, req.ID, certPEM); err != nil {
+				log.Printf("[connector] sign-request %s: submit: %v", req.ID, err)
+				continue
+			}
+			log.Printf("[connector] sign-request %s: complete via Vault PKI (%s)", req.ID, req.Domains)
 		}
 	}
 }

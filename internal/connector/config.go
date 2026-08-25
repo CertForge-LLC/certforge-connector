@@ -51,6 +51,7 @@ type VaultPKIConfig struct {
 	Addr  string `yaml:"addr"  json:"addr"`  // Vault address, e.g. https://vault.example.com
 	Token string `yaml:"token" json:"token"` // Vault token; falls back to $VAULT_TOKEN if empty
 	Mount string `yaml:"mount" json:"mount"` // PKI secrets engine mount path; default "pki"
+	Role  string `yaml:"role"  json:"role"`  // PKI role for signing (optional; uses sign-verbatim if empty)
 }
 
 // DeviceConfig holds the on-prem connection details for one network device.
