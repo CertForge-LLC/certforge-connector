@@ -58,7 +58,8 @@ type VaultPKIConfig struct {
 type DeviceConfig struct {
 	ID         string `yaml:"id"`          // CertForge device ID (UUID)
 	Type       string `yaml:"type"`        // audiocodes | f5
-	Host       string `yaml:"host"`        // management IP or hostname
+	Host       string `yaml:"host"`        // public FQDN — used for cert CN/SAN
+	MgmtHost   string `yaml:"mgmt_host"`   // management address the connector connects to; falls back to Host if empty
 	Port       int    `yaml:"port"`        // default 443
 	Username   string `yaml:"username"`
 	Password   string `yaml:"password"`
@@ -72,13 +73,23 @@ func SupportedDeviceTypes() []string {
 	return []string{"audiocodes", "f5", "ribbon"}
 }
 
+// mgmtAddr returns the address the connector should connect to: MgmtHost when
+// set, otherwise Host (the public FQDN used in the certificate).
+func (d *DeviceConfig) mgmtAddr() string {
+	if d.MgmtHost != "" {
+		return d.MgmtHost
+	}
+	return d.Host
+}
+
 // NewDevice returns a device.Device driver for this config entry.
 // Add new device types here and implement device.Device to support them.
 func (d *DeviceConfig) NewDevice() (device.Device, error) {
+	mgmt := d.mgmtAddr()
 	switch d.Type {
 	case "audiocodes", "":
 		return &audiocodes.Client{
-			Host:       d.Host,
+			Host:       mgmt,
 			Port:       d.Port,
 			Username:   d.Username,
 			Password:   d.Password,
@@ -87,7 +98,7 @@ func (d *DeviceConfig) NewDevice() (device.Device, error) {
 		}, nil
 	case "f5":
 		return &f5.Client{
-			Host:       d.Host,
+			Host:       mgmt,
 			Port:       d.Port,
 			Username:   d.Username,
 			Password:   d.Password,
@@ -96,7 +107,7 @@ func (d *DeviceConfig) NewDevice() (device.Device, error) {
 		}, nil
 	case "ribbon":
 		return &ribbon.Client{
-			Host:       d.Host,
+			Host:       mgmt,
 			Port:       d.Port,
 			Username:   d.Username,
 			Password:   d.Password,

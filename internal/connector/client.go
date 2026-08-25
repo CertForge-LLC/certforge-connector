@@ -61,6 +61,7 @@ type Job struct {
 	SubjectST        string `json:"subject_st,omitempty"`
 	SubjectC         string `json:"subject_c,omitempty"`
 	IncludeHostAsSAN bool   `json:"include_host_as_san,omitempty"`
+	MgmtHost         string `json:"mgmt_host,omitempty"`
 	Username       string `json:"username,omitempty"`
 	Password       string `json:"password,omitempty"`
 	Certificate    string `json:"certificate"`              // populated when status=cert_ready
@@ -78,6 +79,7 @@ type RemoteDevice struct {
 	Status     string `json:"status"`   // "active" | "inactive"
 	Username   string `json:"username,omitempty"`
 	Password   string `json:"password,omitempty"`
+	MgmtHost   string `json:"mgmt_host,omitempty"`
 }
 
 // Client talks to the CertForge connector REST API.
