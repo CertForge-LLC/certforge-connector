@@ -2,11 +2,14 @@ package connector
 
 import (
 	"bytes"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -95,6 +98,46 @@ func NewClient(baseURL, apiKey string) *Client {
 		apiKey:  apiKey,
 		http:    &http.Client{Timeout: 30 * time.Second},
 	}
+}
+
+// NewClientMTLS creates a Client that authenticates via mTLS client certificate
+// instead of a Bearer token. It connects directly to the mTLS port (bypassing
+// Cloudflare) and pins the server certificate so no system trust store is needed.
+//
+// certFile, keyFile, and caFile are paths to PEM files written by "enroll".
+func NewClientMTLS(baseURL, certFile, keyFile, caFile string) (*Client, error) {
+	certPEM, err := os.ReadFile(certFile)
+	if err != nil {
+		return nil, fmt.Errorf("read mTLS cert %s: %w", certFile, err)
+	}
+	keyPEM, err := os.ReadFile(keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("read mTLS key %s: %w", keyFile, err)
+	}
+	caPEM, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("read mTLS server cert %s: %w", caFile, err)
+	}
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("parse mTLS client cert/key: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("parse mTLS server cert for pinning: no PEM block found")
+	}
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			RootCAs:      pool,
+			MinVersion:   tls.VersionTLS12,
+		},
+	}
+	return &Client{
+		baseURL: baseURL,
+		apiKey:  "", // no bearer token — mTLS cert is the credential
+		http:    &http.Client{Timeout: 30 * time.Second, Transport: transport},
+	}, nil
 }
 
 // PollJobs returns pending jobs for this connector's org.
@@ -258,7 +301,9 @@ func (c *Client) AuthorizeLocalSigning(jobID, cn string, sans []string, keyAlgor
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -350,7 +395,9 @@ func (c *Client) get(path string, out any) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return fmt.Errorf("GET %s: %w", path, err)
@@ -385,7 +432,9 @@ func (c *Client) doPost(path string, body []byte, out any, accept202 bool) error
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

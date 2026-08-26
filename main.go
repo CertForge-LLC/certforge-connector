@@ -17,6 +17,13 @@ var Version = "dev"
 
 func main() {
 	log.SetOutput(os.Stdout) // stdout keeps PowerShell from treating log lines as errors
+
+	// Sub-commands: enroll, (default: run)
+	if len(os.Args) > 1 && os.Args[1] == "enroll" {
+		runEnroll(os.Args[2:])
+		return
+	}
+
 	configPath := flag.String("config", "certforge-connector.yaml", "path to connector config file")
 	versionFlag := flag.Bool("version", false, "print version and exit")
 	flag.Parse()

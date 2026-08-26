@@ -15,13 +15,27 @@ import (
 // Config is loaded from connector.yaml (or the path given via -config flag).
 type Config struct {
 	CertForgeURL  string            `yaml:"certforge_url"`   // e.g. https://app.certgovernance.app
-	APIKey        string            `yaml:"api_key"`         // cc_... bearer token from CertForge Settings
+	APIKey        string            `yaml:"api_key"`         // cc_... bearer token from CertForge Settings (not required when using mTLS)
 	ConnectorID   string            `yaml:"connector_id"`    // ID of this connector's record in CertForge (Settings -> CA Connectors)
 	PollInterval  time.Duration     `yaml:"poll_interval"`   // default 30s
 	NoDeviceJobs  bool              `yaml:"no_device_jobs"`  // skip device polling/cert-reads; only sync CA inventory and respond to sign requests
 	Devices       []DeviceConfig    `yaml:"devices"`
 	PrivateCA     *PrivateCAConfig  `yaml:"private_ca"`  // single CA (backward compat)
 	PrivateCAs    []PrivateCAConfig `yaml:"private_cas"` // multiple CAs (use when managing several PKI mounts)
+
+	// mTLS credentials (written by "certforge-connector enroll").
+	// When set, the connector connects directly to the CertForge mTLS port,
+	// bypassing Cloudflare. api_key is not required when mTLS is configured.
+	MTLSHost string `yaml:"mtls_host"` // direct-DNS hostname, e.g. usagent.certgov.app
+	MTLSPort int    `yaml:"mtls_port"` // mTLS port, e.g. 8443
+	MTLSCert string `yaml:"mtls_cert"` // path to PEM client certificate file
+	MTLSKey  string `yaml:"mtls_key"`  // path to PEM client private key file
+	MTLSCA   string `yaml:"mtls_ca"`   // path to pinned server cert PEM file
+}
+
+// MTLSConfigured returns true when enough mTLS fields are set to connect via mTLS.
+func (c *Config) MTLSConfigured() bool {
+	return c.MTLSHost != "" && c.MTLSCert != "" && c.MTLSKey != "" && c.MTLSCA != ""
 }
 
 // PrivateCAConfig enables local CSR signing without a CertForge cloud round-trip.
@@ -179,8 +193,8 @@ func validateConfig(cfg *Config) (*Config, error) {
 	if cfg.CertForgeURL == "" {
 		return nil, fmt.Errorf("certforge_url is required")
 	}
-	if cfg.APIKey == "" {
-		return nil, fmt.Errorf("api_key is required")
+	if cfg.APIKey == "" && !cfg.MTLSConfigured() {
+		return nil, fmt.Errorf("api_key is required (or configure mtls_host/mtls_cert/mtls_key/mtls_ca for mTLS auth)")
 	}
 	if cfg.PollInterval == 0 {
 		cfg.PollInterval = 30 * time.Second

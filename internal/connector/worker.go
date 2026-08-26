@@ -47,9 +47,27 @@ type Worker struct {
 }
 
 func NewWorker(cfg *Config, version string) (*Worker, error) {
+	var cfClient *Client
+	if cfg.MTLSConfigured() {
+		port := cfg.MTLSPort
+		if port == 0 {
+			port = 8443
+		}
+		mtlsBase := fmt.Sprintf("https://%s:%d", cfg.MTLSHost, port)
+		var err error
+		cfClient, err = NewClientMTLS(mtlsBase, cfg.MTLSCert, cfg.MTLSKey, cfg.MTLSCA)
+		if err != nil {
+			return nil, fmt.Errorf("mTLS client: %w", err)
+		}
+		log.Printf("auth: mTLS → %s", mtlsBase)
+	} else {
+		cfClient = NewClient(cfg.CertForgeURL, cfg.APIKey)
+		log.Printf("auth: Bearer token")
+	}
+
 	w := &Worker{
 		cfg:      cfg,
-		client:   NewClient(cfg.CertForgeURL, cfg.APIKey),
+		client:   cfClient,
 		version:  version,
 		localCAs: make(map[string]*LocalCA),
 		vaultCAs: make(map[string]vaultCAEntry),
