@@ -139,9 +139,9 @@ func (w *Worker) Run(ctx context.Context) {
 
 	// Check capabilities first so disabled state is known before any polling.
 	w.registerCapabilities()
+	w.pollSignRequests() // sign requests are handled regardless of no_device_jobs
 	if !w.cfg.NoDeviceJobs {
 		w.poll(ctx)
-		w.pollSignRequests()
 		w.reportDeviceVersions(ctx)
 		w.reportCurrentCerts(ctx)
 	}
@@ -153,9 +153,9 @@ func (w *Worker) Run(ctx context.Context) {
 			log.Printf("[connector] shutting down")
 			return
 		case <-jobTicker.C:
+			w.pollSignRequests() // sign requests are independent of device jobs
 			if !w.cfg.NoDeviceJobs {
 				w.poll(ctx)
-				w.pollSignRequests()
 			}
 		case <-certTicker.C:
 			if !w.cfg.NoDeviceJobs {
@@ -166,9 +166,11 @@ func (w *Worker) Run(ctx context.Context) {
 		case <-capsTicker.C:
 			wasDisabled := w.disabled
 			w.registerCapabilities()
-			if wasDisabled && !w.disabled && !w.cfg.NoDeviceJobs {
-				w.poll(ctx)
+			if wasDisabled && !w.disabled {
 				w.pollSignRequests()
+				if !w.cfg.NoDeviceJobs {
+					w.poll(ctx)
+				}
 			}
 		}
 	}
