@@ -1,6 +1,6 @@
 # certforge-connector
 
-An open-source on-premises agent that automates certificate renewal for network devices managed by [CertForge](https://app.certgovernance.app).
+An open-source on-premises agent that automates certificate renewal for network devices managed by [CertForge](https://app.certgov.app).
 
 ## Why this exists
 
@@ -36,35 +36,54 @@ On startup the connector calls `POST /api/v1/connector/capabilities` to register
 
 ## Prerequisites
 
-- A CertForge account — [sign up free](https://app.certgovernance.app/signup?source=connector) (100 certs, 25 domains; no credit card required) or [self-host](https://app.certgovernance.app/download?source=connector)
-- The devices registered under **Network Devices** in CertForge (credentials stored there, encrypted)
-- A connector agent created in CertForge (steps below)
-- The connector host must have TCP access to the device management IP on the configured port (default 443)
+- A CertForge account — [sign up free](https://app.certgov.app/signup?source=connector) (100 certs, 25 domains; no credit card required)
+- The devices registered under **Integrations → Device Connectors** in CertForge (credentials stored there, encrypted at rest)
+- A connector agent enrolled in CertForge (steps below)
+- TCP access from the connector host to the device management IP on the configured port (default 443)
 
-## Creating a connector agent
+## Registering a connector agent
 
-Each running connector binary is registered in CertForge as a **Connector Agent**. Creating one generates a dedicated API key for that instance.
+Each running connector binary is registered in CertForge as a **Connector Agent**. The connector supports two authentication methods — mTLS enrollment is recommended.
 
-1. Sign in to CertForge and go to **Tools → Connectors**
-2. Click **+ Add Agent**
-3. Give it a descriptive name (e.g. `HQ Connector`) and click **Create & Generate Key**
-4. Copy the API key — it starts with `ct_` and is shown **once only**
+### Option A — mTLS enrollment (recommended)
 
-After creating the agent, assign devices and CA connectors to it in the CertForge UI (**Network Devices** and **CA Connectors** pages). Unassigned devices and CAs are visible to any connector.
+mTLS connects directly to the CertForge agent endpoint on port 8443, bypassing Cloudflare. Authentication is a pinned mutual-TLS certificate — no long-lived API key to manage or rotate.
 
-Set the key as an environment variable on the host running the connector:
+1. Go to **Integrations → Connector Agents** in CertForge
+2. Click **+ Enroll Agent** and choose type **Connector**
+3. Give it a label (e.g. `hq-connector`) and copy the one-time token
+
+Run the enroll command on the connector host:
 
 ```sh
-# Linux / macOS
+certforge-connector enroll \
+  --token  <one-time-token>        \
+  --url    https://app.certgov.app \
+  --label  hq-connector            \
+  --out    /etc/certforge-connector/creds
+```
+
+This writes three files to `--out`:
+
+| File | Contents |
+|------|----------|
+| `client.crt` | Client certificate |
+| `client.key` | Client private key — protect with `chmod 600` |
+| `server.crt` | Pinned CertForge agent CA — no system trust store needed |
+
+The command also prints the exact `mtls_*` values to paste into your config file. See [Configuration](#configuration) below.
+
+### Option B — API key (legacy)
+
+1. Go to **Settings → API Keys** in CertForge
+2. Click **New Key**, choose the **connector** scope
+3. Copy the key — shown **once only**
+
+```sh
 export CERTFORGE_API_KEY=ct_...
 ```
 
-```powershell
-# Windows (PowerShell)
-$env:CERTFORGE_API_KEY = "ct_..."
-```
-
-Reference `$CERTFORGE_API_KEY` in `certforge-connector.yaml` rather than pasting the token directly into the file.
+Reference `$CERTFORGE_API_KEY` in `certforge-connector.yaml` — never paste the raw token into the file.
 
 ## Installation
 
@@ -154,6 +173,14 @@ nssm start CertForgeConnector
 ### Docker
 
 ```sh
+# mTLS auth (recommended) — mount the creds directory written by certforge-connector enroll
+docker run -d --restart unless-stopped \
+  --network host \
+  -v /etc/certforge-connector:/etc/certforge-connector:ro \
+  ghcr.io/certforge-llc/certforge-connector:latest \
+  -config /etc/certforge-connector/certforge-connector.yaml
+
+# API key auth (legacy)
 docker run -d --restart unless-stopped \
   --network host \
   -e CERTFORGE_API_KEY=ct_... \
@@ -187,13 +214,24 @@ Copy `certforge-connector.yaml.example` to `certforge-connector.yaml` and fill i
 
 ```yaml
 # URL of your CertForge instance.
-certforge_url: https://app.certgovernance.app
+certforge_url: https://app.certgov.app
 
-# Connector token from CertForge → Settings → API Keys → Connector Tokens.
-# Always load from an environment variable — never paste the token directly here.
-api_key: $CERTFORGE_API_KEY
+# ── Authentication — choose one ──────────────────────────────────────────────
 
-# How often to poll CertForge for pending jobs (default 30s).
+# Option A: mTLS client certificate (recommended)
+# Written by: certforge-connector enroll --token <otp> --url ... --out ./creds
+mtls_host: usagent.certgov.app   # printed by the enroll command
+mtls_port: 8443                   # 8443 prod · 8444 preview/dev
+mtls_cert: /etc/certforge-connector/creds/client.crt
+mtls_key:  /etc/certforge-connector/creds/client.key
+mtls_ca:   /etc/certforge-connector/creds/server.crt
+
+# Option B: API key (legacy — comment out the mtls_* lines above, uncomment below)
+# api_key: $CERTFORGE_API_KEY
+
+# ── Poll interval ─────────────────────────────────────────────────────────────
+
+# How often to poll CertForge for pending jobs (default 30s, minimum 30s).
 poll_interval: 30s
 ```
 
@@ -304,7 +342,9 @@ The connector syncs inventory on startup and every 6 hours (or the interval conf
 
 ### Environment variables
 
-Only one secret is typically needed:
+**mTLS auth (recommended):** no environment variables needed — credentials are files on disk written by `certforge-connector enroll`.
+
+**API key auth (legacy):**
 
 ```sh
 # Linux / macOS
@@ -318,7 +358,7 @@ $env:CERTFORGE_API_KEY = "ct_..."
 .\certforge-connector.exe -config .\certforge-connector.yaml
 ```
 
-When running as a Windows service, set secrets via `nssm set CertForgeConnector AppEnvironmentExtra` rather than in the YAML file.
+When running as a Windows service with API key auth, set secrets via `nssm set CertForgeConnector AppEnvironmentExtra` rather than in the YAML file.
 
 ### Flags
 
@@ -382,7 +422,14 @@ Alert rules for connector failures and missed check-ins can be configured under 
 - **Device private keys never leave the device.** cert-manager generates key pairs on the device; the connector only exchanges the CSR and the signed certificate.
 - **On-prem CA signing path:** when a `private_ca` or `private_cas` entry is configured, the CA private key is loaded from disk on the connector host. It is never sent to CertForge. Protect the key file with `chmod 600` and restrict read access to the connector process user. For higher-assurance environments, consider a passphrase-protected key or loading the key from a local secrets manager (Vault, AWS Secrets Manager, etc.).
 - CertForge rejects connector polls from suspended or offboarded organizations and logs the attempt as a security event visible to platform administrators.
-- **Required egress:** the connector needs outbound HTTPS (port 443) to your CertForge instance (`app.certgovernance.app` for US, `eu.certgovernance.app` for EU). No inbound ports are required. If you use the on-prem CA path with Vault PKI, also allow HTTPS to your Vault address. Device management traffic (port 443 by default) stays on the private management VLAN.
+- **Required egress — no inbound ports required:**
+
+  | Destination | Port | When |
+  |-------------|------|------|
+  | `app.certgov.app` / `eu.certgov.app` | 443 | Always (API key auth or Cloudflare-proxied calls) |
+  | `usagent.certgov.app` / `eu-agent.certgov.app` | 8443 | mTLS auth — direct agent endpoint |
+  | Your Vault address | 443 (or custom) | Only if `vault_pki:` is configured |
+  | Device management IPs | 443 (default) | Always — stays on the local management VLAN |
 
 ## Adding a device type
 

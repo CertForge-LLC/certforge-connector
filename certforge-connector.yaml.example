@@ -4,7 +4,7 @@
 # ─── Connection ───────────────────────────────────────────────────────────────
 
 # URL of your CertForge instance.
-certforge_url: https://app.certgovernance.app
+certforge_url: https://app.certgov.app
 
 # ─── Authentication — choose ONE option ───────────────────────────────────────
 
