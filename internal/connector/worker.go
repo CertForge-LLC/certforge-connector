@@ -127,8 +127,8 @@ const capsCheckInterval = 5 * time.Minute
 func (w *Worker) Run(ctx context.Context) {
 	log.Printf("[connector] starting %s - polling %s every %s", w.version, w.cfg.CertForgeURL, w.cfg.PollInterval)
 
-	currentPollInterval := w.cfg.PollInterval
-	jobTicker := time.NewTicker(currentPollInterval)
+	pollInterval := w.cfg.PollInterval
+	jobTicker := time.NewTicker(pollInterval)
 	certTicker := time.NewTicker(certReportInterval)
 	inventoryTicker := time.NewTicker(inventorySyncInterval)
 	capsTicker := time.NewTicker(capsCheckInterval)
@@ -138,12 +138,7 @@ func (w *Worker) Run(ctx context.Context) {
 	defer capsTicker.Stop()
 
 	// Check capabilities first so disabled state is known before any polling.
-	// Apply any server-delivered poll interval right away.
-	if serverInterval := w.registerCapabilities(); serverInterval > 0 && serverInterval != currentPollInterval {
-		log.Printf("[connector] server-delivered poll interval: %s (was %s)", serverInterval, currentPollInterval)
-		currentPollInterval = serverInterval
-		jobTicker.Reset(currentPollInterval)
-	}
+	w.registerCapabilities()
 	if !w.cfg.NoDeviceJobs {
 		w.poll(ctx)
 		w.pollSignRequests()
@@ -170,13 +165,7 @@ func (w *Worker) Run(ctx context.Context) {
 			w.syncInventory(ctx)
 		case <-capsTicker.C:
 			wasDisabled := w.disabled
-			serverInterval := w.registerCapabilities()
-			// Apply a changed server-delivered interval without restarting.
-			if serverInterval > 0 && serverInterval != currentPollInterval {
-				log.Printf("[connector] poll interval changed by platform: %s → %s", currentPollInterval, serverInterval)
-				currentPollInterval = serverInterval
-				jobTicker.Reset(currentPollInterval)
-			}
+			w.registerCapabilities()
 			if wasDisabled && !w.disabled && !w.cfg.NoDeviceJobs {
 				w.poll(ctx)
 				w.pollSignRequests()
@@ -185,9 +174,9 @@ func (w *Worker) Run(ctx context.Context) {
 	}
 }
 
-// registerCapabilities registers this connector's capabilities with the platform and
-// returns the server-delivered poll interval (0 if the platform has not set one).
-func (w *Worker) registerCapabilities() time.Duration {
+// registerCapabilities registers this connector's capabilities with the platform.
+// Reports the connector's locally-configured poll interval so the Agent Registry can display it.
+func (w *Worker) registerCapabilities() {
 	// Collect all CA connector IDs; the server checks each and returns 403 if any are disabled.
 	var ids []string
 	for connID := range w.localCAs {
@@ -228,26 +217,25 @@ func (w *Worker) registerCapabilities() time.Duration {
 		}
 	}
 
-	result, err := w.client.RegisterCapabilities(SupportedDeviceTypes(), ids, backendVersions, w.version)
+	// Report our locally-configured poll interval so the platform UI can display it.
+	pollSecs := int(w.cfg.PollInterval.Seconds())
+
+	_, err := w.client.RegisterCapabilities(SupportedDeviceTypes(), ids, backendVersions, w.version, pollSecs)
 	if err != nil {
 		if isConnectorDisabled(err) {
 			if !w.disabled {
 				log.Printf("[connector] connector is disabled in CertForge - standing by until re-enabled")
 				w.disabled = true
 			}
-			return 0
+			return
 		}
 		log.Printf("[connector] register capabilities: %v", err)
-		return 0
+		return
 	}
 	if w.disabled {
 		log.Printf("[connector] connector is now enabled - resuming normal operation")
 		w.disabled = false
 	}
-	if result.PollIntervalSeconds > 0 {
-		return time.Duration(result.PollIntervalSeconds) * time.Second
-	}
-	return 0
 }
 
 // queryVaultVersion fetches the Vault version from the unauthenticated /v1/sys/health endpoint.

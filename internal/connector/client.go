@@ -343,10 +343,8 @@ func (c *Client) SubmitSignRequest(connectorID, reqID, certPEM string) error {
 }
 
 // RegisterCapabilitiesResult is returned by RegisterCapabilities.
-// PollIntervalSeconds is non-zero only when the platform has overridden the
-// connector's local poll_interval setting; 0 means "keep using local config".
 type RegisterCapabilitiesResult struct {
-	PollIntervalSeconds int `json:"poll_interval_seconds"`
+	OK bool `json:"ok"`
 }
 
 // RegisterCapabilities tells CertForge which device driver types this connector supports.
@@ -354,13 +352,14 @@ type RegisterCapabilitiesResult struct {
 // dropdown in the UI so users never have to type a type name by hand.
 // connectorIDs lists all CA connector record IDs this process is driving; CertForge
 // checks each one and returns 403 if any are disabled.
-// Returns a RegisterCapabilitiesResult that may carry a server-delivered poll interval.
-func (c *Client) RegisterCapabilities(deviceTypes []string, connectorIDs []string, backendVersions map[string]string, version string) (RegisterCapabilitiesResult, error) {
+// pollIntervalSeconds is the connector's own configured interval; the server stores it for display.
+func (c *Client) RegisterCapabilities(deviceTypes []string, connectorIDs []string, backendVersions map[string]string, version string, pollIntervalSeconds int) (RegisterCapabilitiesResult, error) {
 	payload := map[string]any{
-		"device_types":     deviceTypes,
-		"connector_ids":    connectorIDs,
-		"backend_versions": backendVersions,
-		"version":          version,
+		"device_types":          deviceTypes,
+		"connector_ids":         connectorIDs,
+		"backend_versions":      backendVersions,
+		"version":               version,
+		"poll_interval_seconds": pollIntervalSeconds,
 	}
 	body, _ := json.Marshal(payload)
 	var result RegisterCapabilitiesResult
