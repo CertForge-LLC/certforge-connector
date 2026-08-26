@@ -9,10 +9,21 @@
 # URL of your CertForge instance.
 certforge_url: https://app.certgovernance.app
 
-# API key for this connector agent.
-# Generated in CertForge under Integrations → Connector Agents → Add Agent.
-# Always load from an environment variable — never paste the token directly here.
-api_key: $CERTFORGE_API_KEY
+# Authentication — choose one: Bearer token (api_key) OR mTLS cert.
+#
+# Option A: Bearer token (traditional)
+# Generated in CertForge under Settings → API Keys.
+# api_key: $CERTFORGE_API_KEY
+#
+# Option B: mTLS client certificate (recommended — bypasses Cloudflare, no shared secret)
+# Run "certforge-connector enroll --token <one-time-token> --url <certforge-url> --out ./creds"
+# to generate the credential files; the enroll command prints the exact values below.
+#
+# mtls_host: preview.certgov.app       # direct-DNS hostname returned by enroll
+# mtls_port: 8444                      # mTLS port (8443 prod, 8444 dev/preview)
+# mtls_cert: ./creds/client.crt        # path printed by enroll
+# mtls_key:  ./creds/client.key
+# mtls_ca:   ./creds/server.crt        # pinned server cert — no system trust store needed
 
 # How often to poll CertForge for pending jobs (default 30s).
 poll_interval: 30s
