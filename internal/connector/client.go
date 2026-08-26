@@ -326,8 +326,33 @@ type SignRequest struct {
 	ValidityDays int    `json:"validity_days,omitempty"` // 0 = use connector default (ca.validDays)
 }
 
+// AgentSignRequest is returned by GetAllSignRequests. It extends SignRequest with the
+// CA connector ID and optional server-delivered Vault config so the connector can sign
+// without needing a YAML ca_connector_id mapping.
+type AgentSignRequest struct {
+	ID            string      `json:"id"`
+	CAConnectorID string      `json:"ca_connector_id"`
+	Domains       string      `json:"domains"`
+	CSRPEM        string      `json:"csr_pem"`
+	ValidityDays  int         `json:"validity_days,omitempty"`
+	VaultPKI      *VaultPKIConfig `json:"vault_pki,omitempty"` // non-nil when server-configured Vault backend
+}
+
+// GetAllSignRequests returns all pending sign requests for this agent's CA connectors in
+// a single call. The server includes decrypted Vault config inline so the connector can
+// sign without a YAML ca_connector_id → vault config mapping.
+// This is the preferred endpoint for new connector versions; the per-connector
+// /ca-connectors/{id}/sign-requests endpoint remains for backward compatibility.
+func (c *Client) GetAllSignRequests() ([]AgentSignRequest, error) {
+	var out []AgentSignRequest
+	if err := c.get("/api/v1/connector/ca-sign-requests", &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // GetSignRequests returns pending CSR signing requests for the given CA connector.
-// These originate from the CertForge approval flow when a Trust Profile uses a private_connector CA.
+// Deprecated: use GetAllSignRequests instead, which covers server-configured Vault connectors.
 func (c *Client) GetSignRequests(connectorID string) ([]SignRequest, error) {
 	var out []SignRequest
 	if err := c.get("/api/v1/connector/ca-connectors/"+connectorID+"/sign-requests", &out); err != nil {

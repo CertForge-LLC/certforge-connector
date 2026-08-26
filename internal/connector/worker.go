@@ -912,52 +912,58 @@ func (w *Worker) signLocally(ctx context.Context, jobID, csrPEM string) (string,
 	return "", fmt.Errorf("no local CA configured for signing; add ca_connector_id to private_ca in connector.yaml")
 }
 
-// pollSignRequests checks each configured private CA for pending approval-flow signing
-// requests (created when the CertForge server processes an approval for a private_connector CA).
-// For each request, the connector signs the CSR with the appropriate local CA (or Vault PKI)
-// and posts the cert back.
+// pollSignRequests fetches all pending approval-flow signing requests for this agent's
+// CA connectors via the agent-level endpoint and signs each one.
+//
+// The server returns requests keyed by agentID (via connector_agent_id on ca_connectors),
+// so the connector no longer needs a YAML ca_connector_id mapping — requests for
+// server-configured Vault backends include decrypted vault credentials inline.
+// Requests for locally-configured CAs (cert+key or YAML vault_pki) are resolved by
+// ca_connector_id against the in-memory localCAs / vaultCAs maps as a fallback.
 func (w *Worker) pollSignRequests() {
 	if w.disabled {
 		return
 	}
-	// File-backed local CAs.
-	for connID, ca := range w.localCAs {
-		reqs, err := w.client.GetSignRequests(connID)
-		if err != nil {
-			log.Printf("[connector] sign-requests %s: %v", connID, err)
-			continue
-		}
-		for _, req := range reqs {
-			validity := ca.validDays
-			if req.ValidityDays > 0 {
-				validity = req.ValidityDays // honour the issuance profile validity from the DTP
+
+	reqs, err := w.client.GetAllSignRequests()
+	if err != nil {
+		log.Printf("[connector] sign-requests: fetch agent requests: %v", err)
+		return
+	}
+
+	for _, req := range reqs {
+		connID := req.CAConnectorID
+		validity := req.ValidityDays
+
+		switch {
+		case req.VaultPKI != nil && req.VaultPKI.Addr != "":
+			// Server-delivered Vault config takes priority (credentials stored in CertForge UI).
+			vaultCfg := *req.VaultPKI
+			if vaultCfg.Mount == "" {
+				vaultCfg.Mount = "pki"
 			}
-			log.Printf("[connector] sign-request %s: signing for %s (validity=%dd)", req.ID, req.Domains, validity)
-			certPEM, err := ca.SignCSR(req.CSRPEM, validity, nil) // no subject template for approval-flow requests
+			if validity == 0 {
+				validity = 365 // server didn't specify; use a safe default
+			}
+			log.Printf("[connector] sign-request %s: signing via server-vault for %s (validity=%dd)", req.ID, req.Domains, validity)
+			certPEM, err := VaultSignCSR(vaultCfg, req.CSRPEM, validity)
 			if err != nil {
-				log.Printf("[connector] sign-request %s: sign CSR: %v", req.ID, err)
+				log.Printf("[connector] sign-request %s: vault sign CSR: %v", req.ID, err)
 				continue
 			}
 			if err := w.client.SubmitSignRequest(connID, req.ID, certPEM); err != nil {
 				log.Printf("[connector] sign-request %s: submit: %v", req.ID, err)
 				continue
 			}
-			log.Printf("[connector] sign-request %s: complete (%s)", req.ID, req.Domains)
-		}
-	}
-	// Vault PKI backed CAs.
-	for connID, vca := range w.vaultCAs {
-		reqs, err := w.client.GetSignRequests(connID)
-		if err != nil {
-			log.Printf("[connector] sign-requests (vault) %s: %v", connID, err)
-			continue
-		}
-		for _, req := range reqs {
-			validity := vca.validDays
-			if req.ValidityDays > 0 {
-				validity = req.ValidityDays
+			log.Printf("[connector] sign-request %s: complete via server-vault (%s)", req.ID, req.Domains)
+
+		case w.vaultCAs[connID].cfg.Addr != "":
+			// YAML-configured Vault PKI fallback.
+			vca := w.vaultCAs[connID]
+			if validity == 0 {
+				validity = vca.validDays
 			}
-			log.Printf("[connector] sign-request %s: signing via Vault PKI for %s (validity=%dd)", req.ID, req.Domains, validity)
+			log.Printf("[connector] sign-request %s: signing via yaml-vault for %s (validity=%dd)", req.ID, req.Domains, validity)
 			certPEM, err := VaultSignCSR(vca.cfg, req.CSRPEM, validity)
 			if err != nil {
 				log.Printf("[connector] sign-request %s: vault sign CSR: %v", req.ID, err)
@@ -967,7 +973,28 @@ func (w *Worker) pollSignRequests() {
 				log.Printf("[connector] sign-request %s: submit: %v", req.ID, err)
 				continue
 			}
-			log.Printf("[connector] sign-request %s: complete via Vault PKI (%s)", req.ID, req.Domains)
+			log.Printf("[connector] sign-request %s: complete via yaml-vault (%s)", req.ID, req.Domains)
+
+		case w.localCAs[connID] != nil:
+			// File-backed local CA.
+			ca := w.localCAs[connID]
+			if validity == 0 {
+				validity = ca.validDays
+			}
+			log.Printf("[connector] sign-request %s: signing via local CA for %s (validity=%dd)", req.ID, req.Domains, validity)
+			certPEM, err := ca.SignCSR(req.CSRPEM, validity, nil)
+			if err != nil {
+				log.Printf("[connector] sign-request %s: sign CSR: %v", req.ID, err)
+				continue
+			}
+			if err := w.client.SubmitSignRequest(connID, req.ID, certPEM); err != nil {
+				log.Printf("[connector] sign-request %s: submit: %v", req.ID, err)
+				continue
+			}
+			log.Printf("[connector] sign-request %s: complete via local CA (%s)", req.ID, req.Domains)
+
+		default:
+			log.Printf("[connector] sign-request %s: no CA configured for connector %s — skipping", req.ID, connID)
 		}
 	}
 }
