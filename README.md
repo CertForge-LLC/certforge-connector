@@ -22,6 +22,75 @@ The connector handles two signing paths:
 
 The connector is stateless between jobs. If it stops, devices simply do not renew until it resumes.
 
+## App Connectors — local application cert delivery
+
+App Connectors automate certificate issuance and renewal for applications running on the **same host** as the connector — nginx, Apache, HAProxy, Envoy, or any TLS-terminating process that reads cert and key files from disk.
+
+```
+[CertForge cloud] ←── poll every 30s ──── [certforge-connector]
+                                                     │
+                                          writes cert + key files
+                                                     │
+                                     [nginx / apache / app on this host]
+```
+
+The connector generates the private key and CSR on the local host, submits the CSR to CertForge for issuance (via your configured CA and Domain Trust Policy), writes the signed cert and key to the paths you specify, then runs a reload command so the application picks up the new certificate — all without manual intervention.
+
+### Setting up an App Connector
+
+1. **Register a Connector Agent** (if you haven't already) — see [Registering a connector agent](#registering-a-connector-agent) above.
+2. In CertForge, go to **Integrations → App Connectors** and click **+ Add Application**.
+3. Fill in the fields:
+
+   | Field | Example | Description |
+   |-------|---------|-------------|
+   | **Name** | `nginx-prod` | Friendly label shown in the UI |
+   | **Connector Agent** | `hq-connector` | The enrolled agent that will manage this app |
+   | **Domain (CN)** | `api.example.com` | Primary domain for the certificate |
+   | **SANs** | `www.api.example.com` | Additional Subject Alternative Names (comma-separated) |
+   | **Trust Profile** | `LetsEncrypt-prod` | Domain Trust Policy governing issuance |
+   | **Cert Path** | `/etc/nginx/ssl/cert.pem` | Where to write the full cert bundle (leaf + chain) |
+   | **Key Path** | `/etc/nginx/ssl/key.pem` | Where to write the private key |
+   | **Chain Path** | `/etc/nginx/ssl/chain.pem` | *(Optional)* Intermediates only, without leaf |
+   | **Reload Command** | `nginx -s reload` | Shell command to run after cert delivery |
+
+4. Click **Save + Request Cert**. CertForge creates a pending job; the connector picks it up on its next poll.
+
+No changes to `certforge-connector.yaml` are needed — all app configuration is stored in CertForge and delivered to the connector with each job.
+
+### App Connector cert renewal flow
+
+1. **Poll** — on each poll tick, the connector calls `GET /api/v1/connector/apps` and receives any pending jobs for its registered apps.
+2. **Generate key + CSR** — for `pending_csr` jobs, the connector generates a 2048-bit RSA key pair and CSR on the local host. The private key is written to `key_path` immediately so it survives connector restarts.
+3. **Submit CSR** — the CSR is posted to CertForge. If the Domain Trust Policy requires approval, the job enters `pending_approval` until a CertForge admin approves it; otherwise issuance starts immediately.
+4. **Wait for issuance** — the connector polls until the job reaches `cert_ready`. CertForge handles ACME challenges (HTTP-01 or DNS-01) and CA communication in the background.
+5. **Deliver cert** — the connector writes the full cert bundle (leaf + chain) to `cert_path`, optionally writes the chain only to `chain_path`, then runs `reload_cmd` via `sh -c`.
+6. **Mark done** — the connector notifies CertForge. The app's status updates to **Active** with the cert expiry date and a scheduled renewal.
+
+> **ACME key note:** When the CA generates the key server-side (some ACME configurations), CertForge sends the server-generated key back to the connector. The connector writes this key to `key_path`, ensuring the key on disk always matches the issued certificate.
+
+### Reload command examples
+
+| Application | Reload command |
+|-------------|---------------|
+| nginx | `nginx -s reload` |
+| Apache | `systemctl reload apache2` |
+| HAProxy | `systemctl reload haproxy` |
+| Envoy | `kill -HUP $(cat /var/run/envoy.pid)` |
+| Postfix | `postfix reload` |
+| Custom script | `/usr/local/bin/restart-app.sh` |
+
+The connector runs `reload_cmd` via `sh -c`, so pipes, `&&`, and environment variable substitution all work. If the command exits non-zero, the job is marked failed in CertForge and an alert fires (if configured).
+
+### Managing App Connectors
+
+From **Integrations → App Connectors** you can:
+
+- **Edit** — update paths, reload command, or Trust Profile (takes effect on next renewal)
+- **Renew** — manually trigger a new cert issuance cycle (e.g. after a domain change)
+- **Disable / Enable** — pause cert delivery for an app without deleting it
+- **Delete** — remove the app and its jobs
+
 ## Supported device types
 
 | Type | Driver |
@@ -368,13 +437,19 @@ When running as a Windows service with API key auth, set secrets via `nssm set C
 
 ## How it works
 
-### Certificate renewal
+The connector handles two independent workloads on each poll tick: **device cert renewal** (network devices on a management VLAN) and **app cert delivery** (local applications on the same host). Both run in parallel.
+
+### Device cert renewal
 
 1. **Poll** — every `poll_interval`, the connector calls `GET /api/v1/connector/jobs` and receives any pending jobs for its devices. Jobs include the device connection details and decrypted credentials from CertForge.
 2. **Pull CSR** — for each renewal job, the connector authenticates to the device management API (using credentials from CertForge) and retrieves the pending Certificate Signing Request.
 3. **Sign** — the CSR is posted to `POST /api/v1/connector/jobs/{id}/csr`. CertForge signs it using the CA configured for that device and returns the signed certificate.
 4. **Install** — the connector pushes the signed certificate to the device.
 5. **Mark done** — the connector posts to `POST /api/v1/connector/jobs/{id}/done`. CertForge records completion and schedules the next renewal window.
+
+### App cert delivery
+
+See [App Connectors — local application cert delivery](#app-connectors--local-application-cert-delivery) above for the full flow.
 
 ### Cert discovery (baseline visibility)
 
