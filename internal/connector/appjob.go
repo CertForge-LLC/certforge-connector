@@ -124,6 +124,16 @@ func (w *Worker) submitAppCSR(ctx context.Context, j AppJob) error {
 func (w *Worker) deliverAppCert(ctx context.Context, j AppJob) error {
 	log.Printf("[app-connector] job %s (%s): cert_ready — delivering to %s", j.ID, j.AppName, j.CertPath)
 
+	// When the CA generated the private key server-side (ACME flow), the server sends it
+	// back in key_pem. Write it to key_path first — overwriting the locally-generated key —
+	// so the key on disk matches the certificate the CA issued.
+	if j.KeyPEM != "" && j.KeyPath != "" {
+		if err := writeFileAtomic(j.KeyPath, []byte(j.KeyPEM), 0600); err != nil {
+			return fmt.Errorf("write server-provided key to %s: %w", j.KeyPath, err)
+		}
+		log.Printf("[app-connector] job %s: server-provided private key written to %s", j.ID, j.KeyPath)
+	}
+
 	// Verify the private key is in place before touching cert files.
 	// If the key is missing (e.g. the host was re-imaged), fail fast with a clear message.
 	if j.KeyPath != "" {

@@ -219,6 +219,10 @@ type AppJob struct {
 	ReloadCmd   string   `json:"reload_cmd,omitempty"`
 	Status      string   `json:"status"`
 	Certificate string   `json:"certificate,omitempty"` // full PEM bundle; populated when status=cert_ready
+	// KeyPEM is non-empty when the CA generated the key server-side (e.g. ACME).
+	// The connector must write this to KeyPath instead of its locally-generated key so
+	// the private key matches the certificate returned by the CA.
+	KeyPEM string `json:"key_pem,omitempty"`
 }
 
 // ListAppJobs returns all pending and cert_ready app connector jobs assigned to this agent.
