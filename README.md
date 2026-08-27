@@ -144,9 +144,10 @@ The command also prints the exact `mtls_*` values to paste into your config file
 
 ### Option B — API key (legacy)
 
-1. Go to **Settings → API Keys** in CertForge
-2. Click **New Key**, choose the **connector** scope
-3. Copy the key — shown **once only**
+1. Go to **Integrations → Connector Agents** in CertForge
+2. Click **+ Enroll Agent** and choose type **Connector**
+3. Give it a label and select **API Key** as the auth method
+4. Copy the key — shown **once only**
 
 ```sh
 export CERTFORGE_API_KEY=ct_...
@@ -491,7 +492,7 @@ Alert rules for connector failures and missed check-ins can be configured under 
 
 ## Security
 
-- The connector authenticates to CertForge with a scoped `ct_` API key generated when you create a Connector Agent (**Tools → Connectors**). These keys can only reach the `/api/v1/connector/` endpoints — they cannot read certificates, manage CA connectors, or perform any other CertForge operations.
+- The connector authenticates to CertForge with a scoped `ct_` API key generated when you create a Connector Agent (**Integrations → Connector Agents**). These keys can only reach the `/api/v1/connector/` endpoints — they cannot read certificates, manage CA connectors, or perform any other CertForge operations.
 - Tokens are hashed (SHA-256) at rest in CertForge. The raw token is shown only at creation.
 - **Device credentials are not stored on the connector host.** They are entered in the CertForge UI, stored AES-256-GCM encrypted in the CertForge database, and delivered to the connector only at job execution time — in memory, never written to disk.
 - **Device private keys never leave the device.** cert-manager generates key pairs on the device; the connector only exchanges the CSR and the signed certificate.
