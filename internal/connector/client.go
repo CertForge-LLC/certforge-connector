@@ -204,6 +204,58 @@ func (c *Client) MarkJobFailed(jobID, reason string) error {
 	return c.post("/api/v1/connector/jobs/"+jobID+"/fail", body, nil)
 }
 
+// ── App Connector ─────────────────────────────────────────────────────────────
+
+// AppJob is a pending or cert_ready app connector job returned by the CertForge connector API.
+type AppJob struct {
+	ID          string   `json:"id"`
+	AppID       string   `json:"app_id"`
+	AppName     string   `json:"app_name"`
+	Domain      string   `json:"domain"`
+	SANs        []string `json:"sans,omitempty"`    // additional SANs (may include Domain)
+	CertPath    string   `json:"cert_path"`
+	KeyPath     string   `json:"key_path"`
+	ChainPath   string   `json:"chain_path,omitempty"`
+	ReloadCmd   string   `json:"reload_cmd,omitempty"`
+	Status      string   `json:"status"`
+	Certificate string   `json:"certificate,omitempty"` // full PEM bundle; populated when status=cert_ready
+}
+
+// ListAppJobs returns all pending and cert_ready app connector jobs assigned to this agent.
+// The connector polls this endpoint on every tick to discover work.
+func (c *Client) ListAppJobs() ([]AppJob, error) {
+	var jobs []AppJob
+	if err := c.get("/api/v1/connector/apps", &jobs); err != nil {
+		return nil, err
+	}
+	return jobs, nil
+}
+
+// SubmitAppCSR posts a PEM-encoded CSR for the given app job.
+// Returns the new job status (pending_approval or pending_acme).
+func (c *Client) SubmitAppCSR(jobID, csrPEM string) (string, error) {
+	body, _ := json.Marshal(map[string]string{"csr": csrPEM})
+	var result struct {
+		Status string `json:"status"`
+	}
+	if err := c.postAccepting202("/api/v1/connector/apps/"+jobID+"/csr", body, &result); err != nil {
+		return "", err
+	}
+	return result.Status, nil
+}
+
+// MarkAppJobDone tells CertForge the cert files were written and the reload command ran.
+func (c *Client) MarkAppJobDone(jobID string) error {
+	return c.post("/api/v1/connector/apps/"+jobID+"/done", nil, nil)
+}
+
+// MarkAppJobFailed tells CertForge the app job failed so it records the error and
+// stops returning the job from ListAppJobs until a new job is created (Renew).
+func (c *Client) MarkAppJobFailed(jobID, reason string) error {
+	body, _ := json.Marshal(map[string]string{"error": reason})
+	return c.post("/api/v1/connector/apps/"+jobID+"/fail", body, nil)
+}
+
 // ConnectorScope is the sync scope for a private CA connector, fetched from CertForge.
 type ConnectorScope struct {
 	Domains        []string `json:"domains"`

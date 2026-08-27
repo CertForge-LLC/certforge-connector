@@ -140,6 +140,7 @@ func (w *Worker) Run(ctx context.Context) {
 	// Check capabilities first so disabled state is known before any polling.
 	w.registerCapabilities()
 	w.pollSignRequests() // sign requests are handled regardless of no_device_jobs
+	w.pollAppJobs(ctx)  // app connector jobs are also independent of device jobs
 	if !w.cfg.NoDeviceJobs {
 		w.poll(ctx)
 		w.reportDeviceVersions(ctx)
@@ -154,6 +155,7 @@ func (w *Worker) Run(ctx context.Context) {
 			return
 		case <-jobTicker.C:
 			w.pollSignRequests() // sign requests are independent of device jobs
+			w.pollAppJobs(ctx)   // app connector jobs run on every tick
 			if !w.cfg.NoDeviceJobs {
 				w.poll(ctx)
 			}
