@@ -68,6 +68,8 @@ func (w *Worker) executeAppJob(ctx context.Context, j AppJob) error {
 			return fmt.Errorf("cert_ready but certificate is empty — server-side bug")
 		}
 		return w.deliverAppCert(ctx, j)
+	case "pending_query":
+		return w.queryAppCert(ctx, j)
 	default:
 		log.Printf("[app-connector] job %s: unexpected status %q — skipping", j.ID, j.Status)
 		return nil
@@ -182,6 +184,36 @@ func (w *Worker) deliverAppCert(ctx context.Context, j AppJob) error {
 		return fmt.Errorf("mark done: %w", err)
 	}
 	log.Printf("[app-connector] job %s (%s): complete — cert delivered and service reloaded", j.ID, j.AppName)
+	return nil
+}
+
+// queryAppCert reads the cert at cert_path, parses it, and reports the expiry and
+// subject info back to CertForge. This is triggered by a Query Cert action in the UI.
+func (w *Worker) queryAppCert(ctx context.Context, j AppJob) error {
+	if j.CertPath == "" {
+		return fmt.Errorf("cert_path not configured for app %q", j.AppName)
+	}
+	certPEM, err := os.ReadFile(j.CertPath)
+	if err != nil {
+		return fmt.Errorf("read cert file %s: %w", j.CertPath, err)
+	}
+	block, _ := pem.Decode(certPEM)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return fmt.Errorf("no certificate found in %s", j.CertPath)
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return fmt.Errorf("parse certificate from %s: %w", j.CertPath, err)
+	}
+	sans := cert.DNSNames
+	if len(sans) == 0 && cert.Subject.CommonName != "" {
+		sans = []string{cert.Subject.CommonName}
+	}
+	log.Printf("[app-connector] query job %s (%s): cert expires %s, CN=%s, SANs=%v",
+		j.ID, j.AppName, cert.NotAfter.Format("2006-01-02"), cert.Subject.CommonName, sans)
+	if err := w.client.ReportAppCert(j.ID, cert.NotAfter, cert.Subject.CommonName, sans); err != nil {
+		return fmt.Errorf("report cert: %w", err)
+	}
 	return nil
 }
 

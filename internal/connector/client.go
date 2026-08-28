@@ -253,6 +253,17 @@ func (c *Client) MarkAppJobDone(jobID string) error {
 	return c.post("/api/v1/connector/apps/"+jobID+"/done", nil, nil)
 }
 
+// ReportAppCert tells CertForge the cert info read from a local cert file for a pending_query job.
+// CertForge uses this to update the app's displayed cert expiry in the UI.
+func (c *Client) ReportAppCert(jobID string, notAfter time.Time, cn string, sans []string) error {
+	body, _ := json.Marshal(map[string]any{
+		"not_after": notAfter.UTC().Format(time.RFC3339),
+		"cn":        cn,
+		"sans":      sans,
+	})
+	return c.post("/api/v1/connector/apps/"+jobID+"/query", body, nil)
+}
+
 // MarkAppJobFailed tells CertForge the app job failed so it records the error and
 // stops returning the job from ListAppJobs until a new job is created (Renew).
 func (c *Client) MarkAppJobFailed(jobID, reason string) error {
