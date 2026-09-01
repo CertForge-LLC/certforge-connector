@@ -131,6 +131,7 @@ func runEnroll(args []string) {
 	certPath := filepath.Join(*outDir, "client.crt")
 	keyPath := filepath.Join(*outDir, "client.key")
 	caPath := filepath.Join(*outDir, "server.crt")
+	cfgPath := filepath.Join(*outDir, "certforge-connector.yaml")
 
 	if err := os.WriteFile(certPath, []byte(result.CertPEM), 0o600); err != nil {
 		log.Fatalf("write %s: %v", certPath, err)
@@ -142,7 +143,29 @@ func runEnroll(args []string) {
 		log.Fatalf("write %s: %v", caPath, err)
 	}
 
-	// 6. Print summary and config snippet.
+	// 6. Write a ready-to-use config file.
+	mtlsPortInt := 8443
+	fmt.Sscanf(mtlsPort, "%d", &mtlsPortInt)
+	yamlContent := fmt.Sprintf(`certforge_url: %s
+mtls_host: %s
+mtls_port: %d
+mtls_cert: %s
+mtls_key: %s
+mtls_ca: %s
+poll_interval: 30s
+`,
+		strings.TrimRight(*certforgeURL, "/"),
+		mtlsHost,
+		mtlsPortInt,
+		certPath,
+		keyPath,
+		caPath,
+	)
+	if err := os.WriteFile(cfgPath, []byte(yamlContent), 0o600); err != nil {
+		log.Fatalf("write %s: %v", cfgPath, err)
+	}
+
+	// 7. Print summary.
 	certBlock, _ := pem.Decode([]byte(result.CertPEM))
 	cert, _ := x509.ParseCertificate(certBlock.Bytes)
 	fmt.Println()
@@ -154,16 +177,9 @@ func runEnroll(args []string) {
 	if result.MTLSEndpoint != "" {
 		fmt.Printf("  mTLS endpoint: %s\n", result.MTLSEndpoint)
 	}
-	fmt.Printf("  Credentials written to: %s\n", *outDir)
 	fmt.Println()
-	fmt.Println("Create certforge-connector.yaml with the following content:")
+	fmt.Printf("Config written to: %s\n", cfgPath)
 	fmt.Println()
-	fmt.Printf("  certforge_url: %s\n", strings.TrimRight(*certforgeURL, "/"))
-	fmt.Printf("  mtls_host: %s\n", mtlsHost)
-	fmt.Printf("  mtls_port: %s\n", mtlsPort)
-	fmt.Printf("  mtls_cert: %s\n", certPath)
-	fmt.Printf("  mtls_key:  %s\n", keyPath)
-	fmt.Printf("  mtls_ca:   %s\n", caPath)
-	fmt.Println()
-	fmt.Println("api_key is not needed when mTLS is configured.")
+	fmt.Println("Start the connector with:")
+	fmt.Printf("  ./certforge-connector --config %s\n", cfgPath)
 }
