@@ -156,13 +156,14 @@ func runEnroll(args []string) {
 	}
 	fmt.Printf("  Credentials written to: %s\n", *outDir)
 	fmt.Println()
-	fmt.Println("Add these lines to certforge-connector.yaml:")
+	fmt.Println("Create certforge-connector.yaml with the following content:")
 	fmt.Println()
+	fmt.Printf("  certforge_url: %s\n", strings.TrimRight(*certforgeURL, "/"))
 	fmt.Printf("  mtls_host: %s\n", mtlsHost)
 	fmt.Printf("  mtls_port: %s\n", mtlsPort)
 	fmt.Printf("  mtls_cert: %s\n", certPath)
 	fmt.Printf("  mtls_key:  %s\n", keyPath)
 	fmt.Printf("  mtls_ca:   %s\n", caPath)
 	fmt.Println()
-	fmt.Println("You can remove or leave api_key — it is ignored when mTLS is configured.")
+	fmt.Println("api_key is not needed when mTLS is configured.")
 }
