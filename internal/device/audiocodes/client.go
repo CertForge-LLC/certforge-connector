@@ -254,6 +254,7 @@ func (c *Client) GenerateCSR(ctx context.Context, subject device.CertSubject) (s
 	//   (a) 401 + Digest challenge  — device requires Digest auth for state-mutating POSTs
 	//   (b) 200 + empty body        — async generation; CSR retrievable via GET
 	//   (c) 200 + CSR body          — synchronous, normal path
+	log.Printf("[audiocodes] GenerateCSR %s: username=%q hasPassword=%v", c.Host, c.Username, c.Password != "")
 	body, status, wwwAuth, err := c.doRaw(ctx, http.MethodPost, rawURL, bytes.NewReader(payload), "application/json", "")
 	log.Printf("[audiocodes] GenerateCSR POST %s: status=%d bodyLen=%d err=%v wwwAuth=%q", c.Host, status, len(body), err, wwwAuth)
 
