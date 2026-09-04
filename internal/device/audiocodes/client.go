@@ -15,6 +15,7 @@ import (
 	"context"
 	"crypto/md5"  //nolint:gosec — MD5 required by RFC 7616 HTTP Digest Auth
 	"crypto/tls"
+	"errors"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -121,7 +122,11 @@ func (c *Client) doRaw(ctx context.Context, method, rawURL string, body io.Reade
 	}
 	defer resp.Body.Close()
 	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
+	if err != nil && !(errors.Is(err, io.ErrUnexpectedEOF) && len(b) > 0) {
+		// Allow ErrUnexpectedEOF when we already have body data: Audiocodes Mediant
+		// firmware closes the TLS session without sending close_notify after some
+		// responses (e.g. GenerateCSR), causing Go to return ErrUnexpectedEOF even
+		// though the complete response body was received.
 		return nil, resp.StatusCode, "", err
 	}
 	return b, resp.StatusCode, resp.Header.Get("WWW-Authenticate"), nil
@@ -243,21 +248,7 @@ func (c *Client) GenerateCSR(ctx context.Context, subject device.CertSubject) (s
 	path := fmt.Sprintf("/files/tls/%d/certificate/request", c.TLSContext)
 	body, status, err := c.do(ctx, http.MethodPost, path, bytes.NewReader(payload), "application/json")
 	if err != nil {
-		// Audiocodes devices commonly drop the TCP connection mid-response while
-		// generating the private key (firmware management plane briefly resets).
-		// The key+CSR is usually committed on the device side. Retry once after a
-		// short delay — a second POST regenerates the key if the first didn't commit,
-		// or returns the newly generated CSR if it did.
-		log.Printf("[audiocodes] GenerateCSR: connection dropped (%v) — retrying in 5s", err)
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-time.After(5 * time.Second):
-		}
-		body, status, err = c.do(ctx, http.MethodPost, path, bytes.NewReader(payload), "application/json")
-		if err != nil {
-			return "", fmt.Errorf("audiocodes: GenerateCSR: %w", err)
-		}
+		return "", fmt.Errorf("audiocodes: GenerateCSR: %w", err)
 	}
 	if status != http.StatusOK {
 		return "", fmt.Errorf("audiocodes: GenerateCSR: HTTP %d: %s", status, body)
