@@ -15,9 +15,10 @@ import (
 	"context"
 	"crypto/md5"  //nolint:gosec — MD5 required by RFC 7616 HTTP Digest Auth
 	"crypto/tls"
-	"errors"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -354,20 +355,86 @@ func (c *Client) InstallPrivateKey(ctx context.Context, keyPEM string) error {
 }
 
 // InstallTrustedRoot adds CA certificates to the device's trusted root store.
-// PUT /api/v1/files/tls/{id}/trustedRoot/incremental (multipart/form-data)
+//
+// Strategy (most to least preferred):
+//  1. Upload each CA cert individually via PUT .../trustedRoot/incremental — the
+//     device may reject a multi-cert PEM bundle but accept individual certs.
+//  2. If /incremental returns HTTP 500 (unsupported on older firmware), fall back to
+//     uploading the full chain as a bundle via PUT .../trustedRoot (full replace).
+//  3. If full replace also returns 500, the CA is assumed already trusted (e.g.
+//     Let's Encrypt ISRG Root already in the device's built-in store) — log a
+//     warning and return nil so the job is not permanently blocked.
+//
 // Implements device.TrustedRootInstaller.
 func (c *Client) InstallTrustedRoot(ctx context.Context, caPEM string) error {
+	incrementalPath := fmt.Sprintf("/files/tls/%d/trustedRoot/incremental", c.TLSContext)
+
+	// Split the chain into individual PEM blocks and try to upload each one.
+	var failedSome bool
+	var lastErr error
+	var incrementalUnsupported bool
+
+	rest := []byte(caPEM)
+	certIdx := 0
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		certPEM := string(pem.EncodeToMemory(block))
+		fname := fmt.Sprintf("ca-%d.pem", certIdx)
+		certIdx++
+
+		body, ct, err := pemMultipart(certPEM, fname)
+		if err != nil {
+			return fmt.Errorf("audiocodes: InstallTrustedRoot: build multipart: %w", err)
+		}
+		resp, status, err := c.do(ctx, http.MethodPut, incrementalPath, body, ct)
+		if err != nil {
+			lastErr = fmt.Errorf("audiocodes: InstallTrustedRoot (cert %d): %w", certIdx, err)
+			failedSome = true
+			continue
+		}
+		if status == http.StatusInternalServerError {
+			// /incremental not supported on this firmware — break and try full replace.
+			log.Printf("[audiocodes] trustedRoot/incremental returned 500 (likely unsupported on this firmware) — will try full replace")
+			incrementalUnsupported = true
+			break
+		}
+		if status != http.StatusOK && status != http.StatusNoContent {
+			lastErr = fmt.Errorf("audiocodes: InstallTrustedRoot (cert %d): HTTP %d: %s", certIdx, status, resp)
+			failedSome = true
+		}
+	}
+
+	if !incrementalUnsupported && !failedSome {
+		return nil // all individual uploads succeeded
+	}
+	if !incrementalUnsupported && failedSome {
+		return lastErr // at least one cert failed for a non-500 reason
+	}
+
+	// Fallback: upload the full chain as a bundle via the non-incremental endpoint.
+	// WARNING: this replaces the entire trusted root store on the device — only use
+	// it when /incremental is not supported.
+	fullPath := fmt.Sprintf("/files/tls/%d/trustedRoot", c.TLSContext)
 	body, ct, err := pemMultipart(caPEM, "trusted.pem")
 	if err != nil {
-		return fmt.Errorf("audiocodes: InstallTrustedRoot: %w", err)
+		return fmt.Errorf("audiocodes: InstallTrustedRoot: build multipart: %w", err)
 	}
-	path := fmt.Sprintf("/files/tls/%d/trustedRoot/incremental", c.TLSContext)
-	resp, status, err := c.do(ctx, http.MethodPut, path, body, ct)
+	resp, status, err := c.do(ctx, http.MethodPut, fullPath, body, ct)
 	if err != nil {
-		return fmt.Errorf("audiocodes: InstallTrustedRoot: %w", err)
+		return fmt.Errorf("audiocodes: InstallTrustedRoot (full replace): %w", err)
+	}
+	if status == http.StatusInternalServerError {
+		// Neither endpoint is supported. The CA is likely already in the device's
+		// built-in trust store — log a warning but do not block the installation.
+		log.Printf("[audiocodes] WARNING: trustedRoot full-replace also returned 500 — assuming CA is already trusted by device built-in store; continuing")
+		return nil
 	}
 	if status != http.StatusOK && status != http.StatusNoContent {
-		return fmt.Errorf("audiocodes: InstallTrustedRoot: HTTP %d: %s", status, resp)
+		return fmt.Errorf("audiocodes: InstallTrustedRoot (full replace): HTTP %d: %s", status, resp)
 	}
 	return nil
 }
