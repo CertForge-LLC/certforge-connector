@@ -121,15 +121,15 @@ func (c *Client) doRaw(ctx context.Context, method, rawURL string, body io.Reade
 		return nil, 0, "", fmt.Errorf("audiocodes: %w", err)
 	}
 	defer resp.Body.Close()
+	wwwAuth := resp.Header.Get("WWW-Authenticate")
 	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil && !(errors.Is(err, io.ErrUnexpectedEOF) && len(b) > 0) {
-		// Allow ErrUnexpectedEOF when we already have body data: Audiocodes Mediant
-		// firmware closes the TLS session without sending close_notify after some
-		// responses (e.g. GenerateCSR), causing Go to return ErrUnexpectedEOF even
-		// though the complete response body was received.
-		return nil, resp.StatusCode, "", err
+		// Always return wwwAuth even on body-read error so callers can detect a
+		// 401 Digest challenge even when the device drops the connection before
+		// sending the response body.
+		return nil, resp.StatusCode, wwwAuth, err
 	}
-	return b, resp.StatusCode, resp.Header.Get("WWW-Authenticate"), nil
+	return b, resp.StatusCode, wwwAuth, nil
 }
 
 var digestParamRE = regexp.MustCompile(`(\w+)="([^"]*)"`)
@@ -246,13 +246,60 @@ func (c *Client) GenerateCSR(ctx context.Context, subject device.CertSubject) (s
 	}
 	payload, _ := json.Marshal(fields)
 	path := fmt.Sprintf("/files/tls/%d/certificate/request", c.TLSContext)
-	body, status, err := c.do(ctx, http.MethodPost, path, bytes.NewReader(payload), "application/json")
-	if err != nil {
+	rawURL := c.base() + path
+
+	// POST directly via doRaw (not the higher-level do()) so that we retain the HTTP
+	// status code and WWW-Authenticate header even when the body-read returns an error.
+	// This lets us distinguish three firmware behaviours:
+	//   (a) 401 + Digest challenge  — device requires Digest auth for state-mutating POSTs
+	//   (b) 200 + empty body        — async generation; CSR retrievable via GET
+	//   (c) 200 + CSR body          — synchronous, normal path
+	body, status, wwwAuth, err := c.doRaw(ctx, http.MethodPost, rawURL, bytes.NewReader(payload), "application/json", "")
+	log.Printf("[audiocodes] GenerateCSR POST %s: status=%d bodyLen=%d err=%v wwwAuth=%q", c.Host, status, len(body), err, wwwAuth)
+
+	// (a) If the device rejected Basic auth and issued a Digest challenge, retry.
+	if status == http.StatusUnauthorized || (err != nil && wwwAuth != "") {
+		log.Printf("[audiocodes] GenerateCSR: auth required — retrying with challenge auth")
+		parsed, _ := url.Parse(rawURL)
+		auth := ""
+		if dc := parseDigestChallenge(wwwAuth); dc != nil {
+			auth = c.buildDigestHeader(http.MethodPost, parsed.RequestURI(), dc)
+		}
+		body, status, _, err = c.doRaw(ctx, http.MethodPost, rawURL, bytes.NewReader(payload), "application/json", auth)
+		log.Printf("[audiocodes] GenerateCSR POST (auth retry) %s: status=%d bodyLen=%d err=%v", c.Host, status, len(body), err)
+	}
+
+	// Tolerate ErrUnexpectedEOF when we received body bytes: firmware omits TLS close_notify.
+	if err != nil && !(errors.Is(err, io.ErrUnexpectedEOF) && len(body) > 0) {
 		return "", fmt.Errorf("audiocodes: GenerateCSR: %w", err)
 	}
 	if status != http.StatusOK {
 		return "", fmt.Errorf("audiocodes: GenerateCSR: HTTP %d: %s", status, body)
 	}
+
+	// (b) 200 with empty body means the device accepted the request asynchronously.
+	// Poll GET on the same endpoint until it returns the CSR (up to 3 attempts, 3s apart).
+	if strings.TrimSpace(string(body)) == "" {
+		log.Printf("[audiocodes] GenerateCSR: empty 200 — polling GET for CSR (async generation)")
+		for attempt := 1; attempt <= 3; attempt++ {
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(3 * time.Second):
+			}
+			gb, gStatus, _, gErr := c.doRaw(ctx, http.MethodGet, rawURL, nil, "", "")
+			log.Printf("[audiocodes] GenerateCSR GET attempt %d: status=%d bodyLen=%d err=%v", attempt, gStatus, len(gb), gErr)
+			if gErr != nil || gStatus != http.StatusOK {
+				continue
+			}
+			if strings.HasPrefix(strings.TrimSpace(string(gb)), "-----BEGIN") {
+				return strings.TrimSpace(string(gb)), nil
+			}
+		}
+		return "", fmt.Errorf("audiocodes: GenerateCSR: device returned 200 with no CSR body (async generation timed out)")
+	}
+
+	// (c) Synchronous: validate and return.
 	csr := strings.TrimSpace(string(body))
 	if !strings.HasPrefix(csr, "-----BEGIN") {
 		return "", fmt.Errorf("audiocodes: GenerateCSR: unexpected response: %.200s", csr)
