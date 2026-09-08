@@ -90,15 +90,27 @@ func (c *Client) login(ctx context.Context) error {
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
+	log.Printf("[ribbon] login attempt on %s (user: %q)", c.Host, c.Username)
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
 		return fmt.Errorf("ribbon: login: %w", err)
 	}
 	defer resp.Body.Close()
-	io.ReadAll(resp.Body) //nolint:errcheck — drain body
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("ribbon: login: HTTP %d (check credentials)", resp.StatusCode)
+		detail := strings.TrimSpace(string(body))
+		if detail == "" {
+			detail = "(empty body)"
+		}
+		// WWW-Authenticate tells us what auth scheme the device actually expects.
+		// If it says "Basic" or "Digest" the device may not be a SWE-lite using
+		// form-based login at /rest/login — check the Ribbon model and REST API docs.
+		wwwAuth := resp.Header.Get("WWW-Authenticate")
+		if wwwAuth != "" {
+			return fmt.Errorf("ribbon: login: HTTP %d (WWW-Authenticate: %s) — body: %.200s", resp.StatusCode, wwwAuth, detail)
+		}
+		return fmt.Errorf("ribbon: login: HTTP %d — body: %.300s", resp.StatusCode, detail)
 	}
 	// Ribbon sets two cookies: PHPSESSID (session) and csrfp_token (CSRF protection).
 	// Both must be sent on every subsequent request, and csrfp_token must also be
