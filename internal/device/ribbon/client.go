@@ -489,6 +489,13 @@ func (c *Client) InstallTrustedRoot(ctx context.Context, caPEM string) error {
 		}
 	}
 
+	// builtInDER holds the raw DER bytes of any cert the device rejected with
+	// 15017 (duplicate serial). 15017 means the cert is already present in the
+	// firmware's built-in trust store — it is trusted, but we must NOT include
+	// it in the slot-1 bundle. If we do, the firmware will try to verify it by
+	// fetching its issuer, which may not be installed, causing 15020.
+	var builtInDER [][]byte
+
 	slot := 2
 	rest := []byte(strings.TrimSpace(caPEM))
 	for len(rest) > 0 {
@@ -517,10 +524,18 @@ func (c *Client) InstallTrustedRoot(ctx context.Context, caPEM string) error {
 			continue
 		}
 		if _, err := checkStatus(b); err != nil {
-			// 15017 = duplicate serial or ECDSA cert rejected by this firmware;
-			// log but continue so the anchor cert can still be installed.
 			algo := certKeyAlgo(block.Bytes)
-			log.Printf("[ribbon] trusted CA cert slot %d: %v — skipping (algo=%s, ECDSA or duplicate?)", slot, err, algo)
+			if strings.Contains(err.Error(), "15017") {
+				// 15017 = duplicate serial: this cert is already in the firmware's
+				// built-in trust store. Record it so we can strip it from the slot-1
+				// bundle — the firmware will resolve it from its built-in store, but
+				// including it in the bundle causes issuer-chain re-validation against
+				// certs that may not be installed, triggering 15020.
+				log.Printf("[ribbon] trusted CA cert slot %d: already in firmware built-in store (15017) — skipping install, stripping from slot-1 bundle (algo=%s)", slot, algo)
+				builtInDER = append(builtInDER, block.Bytes)
+			} else {
+				log.Printf("[ribbon] trusted CA cert slot %d: %v — skipping (algo=%s)", slot, err, algo)
+			}
 			slot++
 			continue
 		}
@@ -528,13 +543,24 @@ func (c *Client) InstallTrustedRoot(ctx context.Context, caPEM string) error {
 		slot++
 	}
 
-	// Step 2: install hardcoded CA anchors that the chain requires but firmware
+	// Step 2: strip built-in certs from the pending server cert bundle so the
+	// firmware doesn't try to re-verify them via their issuers during slot-1 import.
+	if len(builtInDER) > 0 && c.pendingCert != "" {
+		trimmed := removeDERCerts(c.pendingCert, builtInDER)
+		if trimmed != c.pendingCert {
+			log.Printf("[ribbon] stripped %d built-in cert(s) from slot-1 bundle on %s", len(builtInDER), c.Host)
+			c.pendingCert = trimmed
+		}
+	}
+
+	// Step 3: install hardcoded CA anchors that the chain requires but firmware
 	// does not include. Non-fatal — each anchor is attempted independently.
+	// Skip if we've already hit the device's slot limit (15020 on a prior anchor).
 	c.installAnchorCerts(ctx, slot)
 
 	log.Printf("[ribbon] trusted CA chain installed on %s (%d cert(s) attempted)", c.Host, slot-2)
 
-	// Step 3: now that all CA certs are in place, flush the pending server cert to slot 1.
+	// Step 4: now that all CA certs are in place, flush the pending server cert to slot 1.
 	if c.pendingCert != "" {
 		if err := c.installServerCert(ctx); err != nil {
 			return err
@@ -589,6 +615,33 @@ func (c *Client) installAnchorCerts(ctx context.Context, startSlot int) {
 		log.Printf("[ribbon] anchor cert %q installed in slot %d on %s", a.name, slot, c.Host)
 		slot++
 	}
+}
+
+// removeDERCerts returns the PEM bundle with any cert whose raw DER matches an
+// entry in skipDER removed. Used to strip built-in firmware certs (15017 duplicates)
+// from the slot-1 bundle so the firmware doesn't re-validate them via their issuers.
+func removeDERCerts(bundle string, skipDER [][]byte) string {
+	if len(skipDER) == 0 {
+		return bundle
+	}
+	skip := make(map[string]bool, len(skipDER))
+	for _, der := range skipDER {
+		skip[string(der)] = true
+	}
+	var out strings.Builder
+	rest := []byte(strings.TrimSpace(bundle))
+	for len(rest) > 0 {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		if skip[string(block.Bytes)] {
+			continue
+		}
+		out.WriteString(strings.TrimSpace(string(pem.EncodeToMemory(block))) + "\n")
+	}
+	return strings.TrimSpace(out.String())
 }
 
 // certKeyAlgo returns a short string describing the public key algorithm in
