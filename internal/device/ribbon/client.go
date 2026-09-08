@@ -525,18 +525,20 @@ func (c *Client) InstallTrustedRoot(ctx context.Context, caPEM string) error {
 		}
 		if _, err := checkStatus(b); err != nil {
 			algo := certKeyAlgo(block.Bytes)
-			if strings.Contains(err.Error(), "15017") {
-				// 15017 = duplicate serial: this cert is already in the firmware's
-				// built-in trust store. Record it so we can strip it from the slot-1
-				// bundle — the firmware will resolve it from its built-in store, but
-				// including it in the bundle causes issuer-chain re-validation against
-				// certs that may not be installed, triggering 15020.
-				log.Printf("[ribbon] trusted CA cert slot %d: already in firmware built-in store (15017) — skipping install, stripping from slot-1 bundle (algo=%s)", slot, algo)
+			if strings.Contains(err.Error(), "15017") && algo != "" && !strings.HasPrefix(algo, "ECDSA") {
+				// 15017 on an RSA cert = duplicate serial: this cert is already in
+				// the firmware's built-in trust store. Record it so we can strip it
+				// from the slot-1 bundle, and do NOT increment the slot counter —
+				// the slot is still available for the next cert that isn't built-in.
+				// (For ECDSA certs, 15017 means ECDSA rejection; we still advance the
+				// slot in that case because the slot position is unusable for that cert.)
+				log.Printf("[ribbon] trusted CA cert slot %d: already in firmware built-in store (15017, %s) — slot kept, stripping from slot-1 bundle", slot, algo)
 				builtInDER = append(builtInDER, block.Bytes)
+				// intentionally no slot++ — the slot is reused for the next cert
 			} else {
 				log.Printf("[ribbon] trusted CA cert slot %d: %v — skipping (algo=%s)", slot, err, algo)
+				slot++
 			}
-			slot++
 			continue
 		}
 		log.Printf("[ribbon] trusted CA cert installed in slot %d on %s (algo=%s)", slot, c.Host, certKeyAlgo(block.Bytes))
