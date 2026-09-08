@@ -79,3 +79,16 @@ type CertInfo struct {
 type CertReader interface {
 	ReadCert(ctx context.Context) (*CertInfo, error)
 }
+
+// PermanentError wraps an install error that must not be retried.
+// When a device driver returns PermanentError from InstallCert or
+// InstallTrustedRoot, the connector worker marks the job as permanently failed
+// rather than leaving it in cert_ready for the next poll to retry.
+// Use this for firmware-level limitations (e.g. Ribbon 15020 chain-verify
+// failure) where retrying will never succeed without a configuration change.
+type PermanentError struct {
+	Err error
+}
+
+func (e *PermanentError) Error() string { return e.Err.Error() }
+func (e *PermanentError) Unwrap() error { return e.Err }

@@ -356,6 +356,23 @@ func (c *Client) installServerCert(ctx context.Context) error {
 	if err == nil {
 		log.Printf("[ribbon] certificate installed on %s (full-bundle fallback)", c.Host)
 		c.pendingCert = ""
+		return nil
+	}
+
+	// 15020 (unable_to_get_issuer_cert) on all three strategies means Ribbon's
+	// firmware cannot anchor the chain to its built-in trust store. This is a
+	// firmware limitation, not a transient error — retrying with the same cert will
+	// never succeed. Return PermanentError so the connector worker marks the job
+	// failed immediately rather than looping every poll interval forever.
+	if strings.Contains(err.Error(), "15020") {
+		return &device.PermanentError{
+			Err: fmt.Errorf("Ribbon slot-1 cert install failed (15020 unable_to_get_issuer_cert): "+
+				"firmware validates the chain against its built-in trust store only — "+
+				"certs signed by a private/internal CA cannot be installed in slot 1 on this firmware. "+
+				"Resolution: use a publicly-trusted CA (e.g. Let's Encrypt) for this device, "+
+				"or upgrade to firmware that accepts custom trusted-CA slots for slot-1 validation. "+
+				"Original error: %w", err),
+		}
 	}
 	return err
 }

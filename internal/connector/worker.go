@@ -10,6 +10,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -614,8 +615,19 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 			if chain := pemChain(j.Certificate); chain != "" {
 				log.Printf("[connector] job %s: installing trusted root chain on %s", j.ID, j.DeviceName)
 				if err := installer.InstallTrustedRoot(ctx, chain); err != nil {
-					// CA chain or server cert install failed — do not mark done.
-					// The job stays cert_ready on the server so the next poll retries.
+					// PermanentError: the device driver has determined this error will
+					// never resolve with a retry (e.g. Ribbon 15020 firmware limitation).
+					// Mark the job failed immediately so the connector stops retrying
+					// every poll cycle and the user gets a clear error in the UI.
+					var permErr *device.PermanentError
+					if errors.As(err, &permErr) {
+						log.Printf("[connector] job %s: permanent cert install failure on %s — marking failed: %v", j.ID, j.DeviceName, err)
+						if mfErr := w.client.MarkJobFailed(j.ID, err.Error()); mfErr != nil {
+							log.Printf("[connector] job %s: mark-failed: %v", j.ID, mfErr)
+						}
+						return err
+					}
+					// Transient failure — leave the job cert_ready so the next poll retries.
 					log.Printf("[connector] job %s: CA chain / cert install failed: %v", j.ID, err)
 					return err
 				}
