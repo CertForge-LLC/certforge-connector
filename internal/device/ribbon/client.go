@@ -17,6 +17,8 @@ package ribbon
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
@@ -469,6 +471,24 @@ func (c *Client) InstallTrustedRoot(ctx context.Context, caPEM string) error {
 	// every cert after the first, leaving the chain incomplete.
 	// Certs that fail (ECDSA not supported, duplicate serial) are skipped — errors
 	// are non-fatal here because the anchor cert install below may complete the chain.
+
+	// Log the full chain contents for diagnostics (algo + CN per cert).
+	{
+		var idx int
+		scan := []byte(strings.TrimSpace(caPEM))
+		for len(scan) > 0 {
+			blk, rem := pem.Decode(scan)
+			if blk == nil {
+				break
+			}
+			if c, err := x509.ParseCertificate(blk.Bytes); err == nil {
+				log.Printf("[ribbon] chain[%d]: CN=%q issuer=%q algo=%s", idx, c.Subject.CommonName, c.Issuer.CommonName, certKeyAlgo(blk.Bytes))
+			}
+			scan = rem
+			idx++
+		}
+	}
+
 	slot := 2
 	rest := []byte(strings.TrimSpace(caPEM))
 	for len(rest) > 0 {
@@ -499,11 +519,12 @@ func (c *Client) InstallTrustedRoot(ctx context.Context, caPEM string) error {
 		if _, err := checkStatus(b); err != nil {
 			// 15017 = duplicate serial or ECDSA cert rejected by this firmware;
 			// log but continue so the anchor cert can still be installed.
-			log.Printf("[ribbon] trusted CA cert slot %d: %v — skipping (ECDSA or duplicate?)", slot, err)
+			algo := certKeyAlgo(block.Bytes)
+			log.Printf("[ribbon] trusted CA cert slot %d: %v — skipping (algo=%s, ECDSA or duplicate?)", slot, err, algo)
 			slot++
 			continue
 		}
-		log.Printf("[ribbon] trusted CA cert installed in slot %d on %s", slot, c.Host)
+		log.Printf("[ribbon] trusted CA cert installed in slot %d on %s (algo=%s)", slot, c.Host, certKeyAlgo(block.Bytes))
 		slot++
 	}
 
@@ -570,12 +591,29 @@ func (c *Client) installAnchorCerts(ctx context.Context, startSlot int) {
 	}
 }
 
+// certKeyAlgo returns a short string describing the public key algorithm in
+// the raw DER cert (e.g. "RSA-2048", "ECDSA-P256"). Used for diagnostic logging.
+func certKeyAlgo(der []byte) string {
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		return "unknown"
+	}
+	switch pub := cert.PublicKey.(type) {
+	case *rsa.PublicKey:
+		return fmt.Sprintf("RSA-%d", pub.N.BitLen())
+	case *ecdsa.PublicKey:
+		return fmt.Sprintf("ECDSA-%s", pub.Curve.Params().Name)
+	default:
+		return fmt.Sprintf("%T", pub)
+	}
+}
+
 // isrgRootX1PEM is the ISRG Root X1 certificate (RSA-4096, self-signed, expires 2035).
-// Let's Encrypt's YR-series chain: leaf → YR2 (intermediate) → Root YR (ECDSA cross-sign,
-// issued by ISRG Root X1) → ISRG Root X1. Ribbon firmware 13.x does not include ISRG
-// Root X1 in its built-in trust store, so without it the chain terminates at Root YR
-// whose issuer cannot be found, producing verify_err 2 / error 15020. Installing it
-// via the REST API completes the anchor and allows the full chain to verify.
+// Let's Encrypt's default chain for RSA leaf certs: leaf → R10/R11 (RSA intermediate) →
+// ISRG Root X1. Ribbon firmware 13.x does not include ISRG Root X1 in its built-in trust
+// store, so we install it via the REST API to complete the chain anchor.
+// Note: if the chain uses ECDSA intermediates (E5/E6), the CertForge server will attempt
+// to fetch an RSA alternate chain before sending the cert to the connector.
 const isrgRootX1PEM = `-----BEGIN CERTIFICATE-----
 MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw
 TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh
