@@ -645,6 +645,16 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 			log.Printf("[connector] job %s: mark done failed: %v", j.ID, err)
 		}
 		log.Printf("[connector] job %s: complete - cert installed on %s", j.ID, j.DeviceName)
+		// After a successful install, read back the cert from the device so the
+		// server's "current cert" display updates immediately without requiring a
+		// manual query. Non-fatal: if the read-back fails the next scheduled
+		// poll will pick it up.
+		log.Printf("[connector] job %s: reading back installed cert from %s", j.ID, j.DeviceName)
+		if _, ok := dev.(device.CertReader); ok {
+			w.reportOneCertViaDevice(ctx, j.DeviceID, j.Host, j.Port, j.SkipVerify, dev)
+		} else {
+			w.reportOneCert(j.DeviceID, j.Host, j.Port, j.SkipVerify)
+		}
 		return nil
 	}
 
