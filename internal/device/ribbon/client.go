@@ -359,18 +359,20 @@ func (c *Client) installServerCert(ctx context.Context) error {
 		return nil
 	}
 
-	// 15020 (unable_to_get_issuer_cert) on all three strategies means Ribbon's
-	// firmware cannot anchor the chain to its built-in trust store. This is a
-	// firmware limitation, not a transient error — retrying with the same cert will
-	// never succeed. Return PermanentError so the connector worker marks the job
-	// failed immediately rather than looping every poll interval forever.
+	// 15020 (unable_to_get_issuer_cert) on all three strategies is a permanent
+	// firmware failure — retrying with the same cert will never succeed. Common causes:
+	//  • The cert is signed by a private/internal CA not in the firmware trust store.
+	//  • The firmware cannot reach the AIA URL to download intermediates (no internet).
+	//  • The firmware trust store is outdated and missing the issuer's intermediate.
+	// Return PermanentError so the worker marks the job failed instead of looping.
 	if strings.Contains(err.Error(), "15020") {
 		return &device.PermanentError{
 			Err: fmt.Errorf("Ribbon slot-1 cert install failed (15020 unable_to_get_issuer_cert): "+
-				"firmware validates the chain against its built-in trust store only — "+
-				"certs signed by a private/internal CA cannot be installed in slot 1 on this firmware. "+
-				"Resolution: use a publicly-trusted CA (e.g. Let's Encrypt) for this device, "+
-				"or upgrade to firmware that accepts custom trusted-CA slots for slot-1 validation. "+
+				"the firmware could not verify the certificate chain. "+
+				"Possible causes: (1) cert is signed by a private/internal CA not trusted by the firmware; "+
+				"(2) firmware cannot reach AIA URLs to download intermediates (check network/firewall); "+
+				"(3) firmware trust store is outdated and missing the issuer intermediate — upgrade firmware. "+
+				"The connector sent leaf-only, filtered-chain, and full-chain variants; all failed. "+
 				"Original error: %w", err),
 		}
 	}
