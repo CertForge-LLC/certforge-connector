@@ -466,12 +466,6 @@ func (c *Client) InstallTrustedRoot(ctx context.Context, caPEM string) error {
 	}
 	defer c.logout(ctx)
 
-	// Step 1: install each CA cert individually into consecutive trusted-CA slots.
-	// Ribbon only imports one PEM block per POST; a bundle would silently discard
-	// every cert after the first, leaving the chain incomplete.
-	// Certs that fail (ECDSA not supported, duplicate serial) are skipped — errors
-	// are non-fatal here because the anchor cert install below may complete the chain.
-
 	// Log the full chain contents for diagnostics (algo + CN per cert).
 	{
 		var idx int
@@ -481,22 +475,37 @@ func (c *Client) InstallTrustedRoot(ctx context.Context, caPEM string) error {
 			if blk == nil {
 				break
 			}
-			if c, err := x509.ParseCertificate(blk.Bytes); err == nil {
-				log.Printf("[ribbon] chain[%d]: CN=%q issuer=%q algo=%s", idx, c.Subject.CommonName, c.Issuer.CommonName, certKeyAlgo(blk.Bytes))
+			if parsed, err := x509.ParseCertificate(blk.Bytes); err == nil {
+				log.Printf("[ribbon] chain[%d]: CN=%q issuer=%q algo=%s", idx, parsed.Subject.CommonName, parsed.Issuer.CommonName, certKeyAlgo(blk.Bytes))
 			}
 			scan = rem
 			idx++
 		}
 	}
 
-	// builtInDER holds the raw DER bytes of any cert the device rejected with
-	// 15017 (duplicate serial). 15017 means the cert is already present in the
-	// firmware's built-in trust store — it is trusted, but we must NOT include
-	// it in the slot-1 bundle. If we do, the firmware will try to verify it by
-	// fetching its issuer, which may not be installed, causing 15020.
+	// Step 1: install hardcoded anchor certs FIRST so they get the lowest
+	// available slot numbers. This is critical: ISRG Root X1 (the missing
+	// chain anchor) must occupy slot 2 while the slot is clean and empty.
+	// If we install chain certs first, Root YR ends up in slot 3 (or is
+	// rejected with 15017-kept), leaving slot 3 occupied when ISRG Root X1
+	// tries to use it — causing 15020.
+	//
+	// Slot layout after this call:
+	//   slot 2  = ISRG Root X1  (self-signed anchor)
+	//   slot 3+ = chain certs
+	slot := c.installAnchorCerts(ctx, 2)
+
+	// Step 2: install each chain CA cert individually into consecutive slots.
+	// Ribbon only imports one PEM block per POST; a bundle would silently
+	// discard every cert after the first.
+	//
+	// builtInDER collects certs the device rejected with 15017 (duplicate
+	// serial = already in firmware's built-in trust store). They are trusted
+	// but must NOT appear in the slot-1 server cert bundle, otherwise the
+	// firmware tries to re-verify them via their issuers during slot-1
+	// import, which can trigger 15020.
 	var builtInDER [][]byte
 
-	slot := 2
 	rest := []byte(strings.TrimSpace(caPEM))
 	for len(rest) > 0 {
 		var block *pem.Block
@@ -526,15 +535,13 @@ func (c *Client) InstallTrustedRoot(ctx context.Context, caPEM string) error {
 		if _, err := checkStatus(b); err != nil {
 			algo := certKeyAlgo(block.Bytes)
 			if strings.Contains(err.Error(), "15017") && algo != "" && !strings.HasPrefix(algo, "ECDSA") {
-				// 15017 on an RSA cert = duplicate serial: this cert is already in
-				// the firmware's built-in trust store. Record it so we can strip it
-				// from the slot-1 bundle, and do NOT increment the slot counter —
-				// the slot is still available for the next cert that isn't built-in.
-				// (For ECDSA certs, 15017 means ECDSA rejection; we still advance the
-				// slot in that case because the slot position is unusable for that cert.)
+				// 15017 on an RSA cert = duplicate serial: already in the
+				// firmware's built-in trust store. Record it for bundle
+				// stripping, but do NOT increment the slot — the slot is
+				// still available for the next cert.
 				log.Printf("[ribbon] trusted CA cert slot %d: already in firmware built-in store (15017, %s) — slot kept, stripping from slot-1 bundle", slot, algo)
 				builtInDER = append(builtInDER, block.Bytes)
-				// intentionally no slot++ — the slot is reused for the next cert
+				// intentionally no slot++
 			} else {
 				log.Printf("[ribbon] trusted CA cert slot %d: %v — skipping (algo=%s)", slot, err, algo)
 				slot++
@@ -545,7 +552,7 @@ func (c *Client) InstallTrustedRoot(ctx context.Context, caPEM string) error {
 		slot++
 	}
 
-	// Step 2: strip built-in certs from the pending server cert bundle so the
+	// Step 3: strip built-in certs from the pending server cert bundle so the
 	// firmware doesn't try to re-verify them via their issuers during slot-1 import.
 	if len(builtInDER) > 0 && c.pendingCert != "" {
 		trimmed := removeDERCerts(c.pendingCert, builtInDER)
@@ -555,12 +562,7 @@ func (c *Client) InstallTrustedRoot(ctx context.Context, caPEM string) error {
 		}
 	}
 
-	// Step 3: install hardcoded CA anchors that the chain requires but firmware
-	// does not include. Non-fatal — each anchor is attempted independently.
-	// Skip if we've already hit the device's slot limit (15020 on a prior anchor).
-	c.installAnchorCerts(ctx, slot)
-
-	log.Printf("[ribbon] trusted CA chain installed on %s (%d cert(s) attempted)", c.Host, slot-2)
+	log.Printf("[ribbon] trusted CA chain installed on %s (%d total slot(s) attempted)", c.Host, slot-2)
 
 	// Step 4: now that all CA certs are in place, flush the pending server cert to slot 1.
 	if c.pendingCert != "" {
@@ -581,7 +583,11 @@ func (c *Client) InstallTrustedRoot(ctx context.Context, caPEM string) error {
 // before persisting them. Self-signed roots (ISRG Root X1) have no issuer in the chain,
 // so the UI rejects them with X509 Verify Error 1. The REST endpoint /certificate/:id
 // ?action=import does not apply that pre-store check and accepts RSA roots directly.
-func (c *Client) installAnchorCerts(ctx context.Context, startSlot int) {
+//
+// Returns the next available slot number after all anchors have been attempted.
+// Whether an anchor succeeded, was already present (15017), or failed, the slot is
+// always advanced — the slot is either now occupied or its state is unknown.
+func (c *Client) installAnchorCerts(ctx context.Context, startSlot int) int {
 	type anchor struct {
 		name string
 		pem  string
@@ -610,6 +616,9 @@ func (c *Client) installAnchorCerts(ctx context.Context, startSlot int) {
 			continue
 		}
 		if _, err := checkStatus(b); err != nil {
+			// 15017 = already installed (either from a previous run in this slot,
+			// or the firmware added it in a later update). Either way, this slot
+			// is occupied — advance past it.
 			log.Printf("[ribbon] anchor cert %q slot %d on %s: %v", a.name, slot, c.Host, err)
 			slot++
 			continue
@@ -617,6 +626,7 @@ func (c *Client) installAnchorCerts(ctx context.Context, startSlot int) {
 		log.Printf("[ribbon] anchor cert %q installed in slot %d on %s", a.name, slot, c.Host)
 		slot++
 	}
+	return slot
 }
 
 // removeDERCerts returns the PEM bundle with any cert whose raw DER matches an
