@@ -49,6 +49,10 @@ type Worker struct {
 	// disabled is true when CertForge reports this connector is disabled.
 	// All polling is suppressed until registerCapabilities succeeds again.
 	disabled bool
+	// noAppJobs is set after the server confirms no app connector jobs are
+	// available for this agent (empty list or 403). Suppresses further polling
+	// so device-only connectors don't emit repeated error logs.
+	noAppJobs bool
 }
 
 func NewWorker(cfg *Config, version string) (*Worker, error) {

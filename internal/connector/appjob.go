@@ -31,12 +31,19 @@ import (
 // pollAppJobs fetches pending and cert_ready app connector jobs and executes them.
 // Called on every poll tick alongside poll() for device jobs.
 func (w *Worker) pollAppJobs(ctx context.Context) {
-	if w.disabled {
+	if w.disabled || w.noAppJobs {
 		return
 	}
 	jobs, err := w.client.ListAppJobs()
 	if err != nil {
-		log.Printf("[app-connector] list jobs: %v", err)
+		// A 403 means this connector has no app-connector role (device-only connector).
+		// Suppress subsequent polling rather than logging an error every 30 seconds.
+		if strings.Contains(err.Error(), "403") {
+			log.Printf("no app connector jobs for this agent — disabling app job polling")
+			w.noAppJobs = true
+			return
+		}
+		log.Printf("app job poll: %v", err)
 		return
 	}
 	if len(jobs) == 0 {
