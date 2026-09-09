@@ -9,6 +9,7 @@ import (
 	"github.com/certforge/certforge-connector/internal/device/audiocodes"
 	"github.com/certforge/certforge-connector/internal/device/f5"
 	"github.com/certforge/certforge-connector/internal/device/ribbon"
+	"github.com/certforge/certforge-connector/internal/device/watchguard"
 	"gopkg.in/yaml.v3"
 )
 
@@ -85,7 +86,7 @@ type DeviceConfig struct {
 // SupportedDeviceTypes returns the list of device driver types this connector binary supports.
 // Update this alongside the switch in NewDevice whenever a new driver is added.
 func SupportedDeviceTypes() []string {
-	return []string{"audiocodes", "f5", "ribbon"}
+	return []string{"audiocodes", "f5", "ribbon", "watchguard"}
 }
 
 // mgmtAddr returns the address the connector should connect to: MgmtHost when
@@ -128,8 +129,21 @@ func (d *DeviceConfig) NewDevice() (device.Device, error) {
 			Password:   d.Password,
 			SkipVerify: d.SkipVerify,
 		}, nil
+	case "watchguard":
+		port := d.Port
+		if port == 0 {
+			port = 4118 // WatchGuard Firebox SSH management port
+		}
+		return &watchguard.Client{
+			Host:       mgmt,
+			Port:       port,
+			Username:   d.Username,
+			Password:   d.Password,
+			TLSContext: d.TLSContext, // 0=proxy-server 1=web-server-https 2=vpn
+			SkipVerify: d.SkipVerify,
+		}, nil
 	default:
-		return nil, fmt.Errorf("unknown device type %q - supported: audiocodes, f5, ribbon", d.Type)
+		return nil, fmt.Errorf("unknown device type %q - supported: audiocodes, f5, ribbon, watchguard", d.Type)
 	}
 }
 
