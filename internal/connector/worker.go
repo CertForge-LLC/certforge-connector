@@ -147,7 +147,15 @@ func (w *Worker) Run(ctx context.Context) {
 	defer capsTicker.Stop()
 
 	// Check capabilities first so disabled state is known before any polling.
+	// The server resolves the agent name from the mTLS cert label; if the DB
+	// lookup transiently misses (common on server restart), the name comes back
+	// empty on the first call.  Retry once after a short pause so the prefix is
+	// set before the first poll tick rather than waiting for the 5-minute ticker.
 	w.registerCapabilities()
+	if w.agentName == "" && !w.disabled {
+		time.Sleep(5 * time.Second)
+		w.registerCapabilities()
+	}
 	w.pollSignRequests() // sign requests are handled regardless of no_device_jobs
 	w.pollAppJobs(ctx)  // app connector jobs are also independent of device jobs
 	if !w.cfg.NoDeviceJobs {
@@ -251,6 +259,8 @@ func (w *Worker) registerCapabilities() {
 		w.agentName = result.Name
 		log.SetPrefix("[" + result.Name + "] ")
 		log.Printf("registered as %q", result.Name)
+	} else if result.Name == "" && w.agentName == "" {
+		log.Printf("registered (agent name not yet available — will retry)")
 	}
 	if w.disabled {
 		log.Printf("connector is now enabled - resuming normal operation")
