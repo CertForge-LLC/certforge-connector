@@ -436,7 +436,8 @@ func (c *Client) SubmitSignRequest(connectorID, reqID, certPEM string) error {
 
 // RegisterCapabilitiesResult is returned by RegisterCapabilities.
 type RegisterCapabilitiesResult struct {
-	OK bool `json:"ok"`
+	OK   bool   `json:"ok"`
+	Name string `json:"name"` // the agent's registered name in CertForge; use as log prefix
 }
 
 // RegisterCapabilities tells CertForge which device driver types this connector supports.

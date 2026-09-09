@@ -33,6 +33,10 @@ type Worker struct {
 	cfg      *Config
 	client   *Client
 	version  string
+	// agentName is the name assigned to this connector in CertForge (e.g. "nginx-audiocodes-test").
+	// Received from the server on the first successful registerCapabilities call and used as the
+	// log prefix so multi-connector setups are easy to distinguish in terminal output.
+	agentName string
 	// localCAs maps ca_connector_id → LocalCA for governed local signing (DTP-validated).
 	// Populated from private_cas[] entries (and private_ca if it has a ca_connector_id).
 	localCAs map[string]*LocalCA
@@ -93,7 +97,7 @@ func NewWorker(cfg *Config, version string) (*Worker, error) {
 				if mount == "" {
 					mount = "pki"
 				}
-				log.Printf("[connector] vault PKI CA loaded: ca_connector_id=%s addr=%s mount=%s validity=%dd (governed)", caCfg.CAConnectorID, caCfg.VaultPKI.Addr, mount, vdays)
+				log.Printf("vault PKI CA loaded: ca_connector_id=%s addr=%s mount=%s validity=%dd (governed)", caCfg.CAConnectorID, caCfg.VaultPKI.Addr, mount, vdays)
 			}
 			continue
 		}
@@ -103,7 +107,7 @@ func NewWorker(cfg *Config, version string) (*Worker, error) {
 		}
 		if caCfg.CAConnectorID != "" {
 			w.localCAs[caCfg.CAConnectorID] = ca
-			log.Printf("[connector] private CA loaded: ca_connector_id=%s cert=%s validity=%dd (governed)", caCfg.CAConnectorID, caCfg.CertFile, ca.validDays)
+			log.Printf("private CA loaded: ca_connector_id=%s cert=%s validity=%dd (governed)", caCfg.CAConnectorID, caCfg.CertFile, ca.validDays)
 		} else {
 			// Ungoverned signing (no ca_connector_id) is no longer supported.
 			// Every private CA must have a ca_connector_id so CertForge can enforce
@@ -126,7 +130,7 @@ const capsCheckInterval = 5 * time.Minute
 
 // Run polls in a loop until ctx is cancelled.
 func (w *Worker) Run(ctx context.Context) {
-	log.Printf("[connector] starting %s - polling %s every %s", w.version, w.cfg.CertForgeURL, w.cfg.PollInterval)
+	log.Printf("starting %s - polling %s every %s", w.version, w.cfg.CertForgeURL, w.cfg.PollInterval)
 
 	pollInterval := w.cfg.PollInterval
 	jobTicker := time.NewTicker(pollInterval)
@@ -152,7 +156,7 @@ func (w *Worker) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			log.Printf("[connector] shutting down")
+			log.Printf("shutting down")
 			return
 		case <-jobTicker.C:
 			w.pollSignRequests() // sign requests are independent of device jobs
@@ -225,20 +229,27 @@ func (w *Worker) registerCapabilities() {
 	// Report our locally-configured poll interval so the platform UI can display it.
 	pollSecs := int(w.cfg.PollInterval.Seconds())
 
-	_, err := w.client.RegisterCapabilities(SupportedDeviceTypes(), ids, backendVersions, w.version, pollSecs)
+	result, err := w.client.RegisterCapabilities(SupportedDeviceTypes(), ids, backendVersions, w.version, pollSecs)
 	if err != nil {
 		if isConnectorDisabled(err) {
 			if !w.disabled {
-				log.Printf("[connector] connector is disabled in CertForge - standing by until re-enabled")
+				log.Printf("connector is disabled in CertForge - standing by until re-enabled")
 				w.disabled = true
 			}
 			return
 		}
-		log.Printf("[connector] register capabilities: %v", err)
+		log.Printf("register capabilities: %v", err)
 		return
 	}
+	// Apply the server-assigned name as the global log prefix so every subsequent
+	// message identifies this agent (e.g. "[nginx-audiocodes-test] poll: ok, ...").
+	if result.Name != "" && result.Name != w.agentName {
+		w.agentName = result.Name
+		log.SetPrefix("[" + result.Name + "] ")
+		log.Printf("registered as %q", result.Name)
+	}
 	if w.disabled {
-		log.Printf("[connector] connector is now enabled - resuming normal operation")
+		log.Printf("connector is now enabled - resuming normal operation")
 		w.disabled = false
 	}
 }
@@ -278,7 +289,7 @@ func (w *Worker) syncInventory(ctx context.Context) {
 	// Pull current connector list from CertForge (scope + optional server-side vault config).
 	serverConns, err := w.client.GetCAConnectors()
 	if err != nil {
-		log.Printf("[connector] inventory sync: fetch ca-connectors: %v", err)
+		log.Printf("inventory sync: fetch ca-connectors: %v", err)
 		return
 	}
 	if len(serverConns) == 0 {
@@ -329,16 +340,16 @@ func (w *Worker) syncOneConnector(ctx context.Context, sc CAConnectorInfo, yamlC
 	if vaultCfg != nil {
 		certs, err := FetchVaultPKICerts(*vaultCfg, sc.Scope)
 		if err != nil {
-			log.Printf("[connector] inventory sync %s (%s): vault-pki: %v", sc.ID, sc.Name, err)
+			log.Printf("inventory sync %s (%s): vault-pki: %v", sc.ID, sc.Name, err)
 			_ = w.client.ReportSyncError(sc.ID, "vault-pki: "+err.Error())
 			return
 		}
 		count, err := w.client.PushInventory(sc.ID, certs)
 		if err != nil {
-			log.Printf("[connector] inventory sync %s (%s): push %d certs: %v", sc.ID, sc.Name, len(certs), err)
+			log.Printf("inventory sync %s (%s): push %d certs: %v", sc.ID, sc.Name, len(certs), err)
 			return
 		}
-		log.Printf("[connector] inventory sync %s (%s): accepted %d/%d certs (vault)", sc.ID, sc.Name, count, len(certs))
+		log.Printf("inventory sync %s (%s): accepted %d/%d certs (vault)", sc.ID, sc.Name, count, len(certs))
 		return
 	}
 
@@ -346,7 +357,7 @@ func (w *Worker) syncOneConnector(ctx context.Context, sc CAConnectorInfo, yamlC
 	var revokedSerials map[string]bool
 	if crlFile != "" {
 		if rs, err := ReadRevokedSerials(crlFile); err != nil {
-			log.Printf("[connector] inventory sync %s (%s): read CRL: %v", sc.ID, sc.Name, err)
+			log.Printf("inventory sync %s (%s): read CRL: %v", sc.ID, sc.Name, err)
 		} else {
 			revokedSerials = rs
 		}
@@ -354,16 +365,16 @@ func (w *Worker) syncOneConnector(ctx context.Context, sc CAConnectorInfo, yamlC
 	var err error
 	certs, err = ScanIssuedCerts(issuedDir, sc.Scope, revokedSerials)
 	if err != nil {
-		log.Printf("[connector] inventory sync %s (%s): scan %s: %v", sc.ID, sc.Name, issuedDir, err)
+		log.Printf("inventory sync %s (%s): scan %s: %v", sc.ID, sc.Name, issuedDir, err)
 		_ = w.client.ReportSyncError(sc.ID, "scan: "+err.Error())
 		return
 	}
 	count, err := w.client.PushInventory(sc.ID, certs)
 	if err != nil {
-		log.Printf("[connector] inventory sync %s (%s): push %d certs: %v", sc.ID, sc.Name, len(certs), err)
+		log.Printf("inventory sync %s (%s): push %d certs: %v", sc.ID, sc.Name, len(certs), err)
 		return
 	}
-	log.Printf("[connector] inventory sync %s (%s): accepted %d/%d certs (dir)", sc.ID, sc.Name, count, len(certs))
+	log.Printf("inventory sync %s (%s): accepted %d/%d certs (dir)", sc.ID, sc.Name, count, len(certs))
 }
 
 // reportDeviceVersions queries the firmware/software version from every device
@@ -375,7 +386,7 @@ func (w *Worker) reportDeviceVersions(ctx context.Context) {
 	}
 	devices, err := w.client.GetDevices()
 	if err != nil {
-		log.Printf("[connector] device version check: fetch devices: %v", err)
+		log.Printf("device version check: fetch devices: %v", err)
 		return
 	}
 	for _, d := range devices {
@@ -407,13 +418,13 @@ func (w *Worker) reportDeviceVersions(ctx context.Context) {
 			}
 		}
 		if cfg.Username == "" || cfg.Password == "" {
-			log.Printf("[connector] device %s (%s): version check skipped: missing credentials", d.ID, d.Host)
+			log.Printf("device %s (%s): version check skipped: missing credentials", d.ID, d.Host)
 			continue
 		}
-		log.Printf("[connector] device %s (%s): version check: skip_verify=%v", d.ID, d.Host, cfg.SkipVerify)
+		log.Printf("device %s (%s): version check: skip_verify=%v", d.ID, d.Host, cfg.SkipVerify)
 		drv, err := cfg.NewDevice()
 		if err != nil {
-			log.Printf("[connector] device %s (%s): init driver: %v", d.ID, d.Host, err)
+			log.Printf("device %s (%s): init driver: %v", d.ID, d.Host, err)
 			continue
 		}
 		v, ok := drv.(device.Versioned)
@@ -422,12 +433,12 @@ func (w *Worker) reportDeviceVersions(ctx context.Context) {
 		}
 		ver, err := v.SoftwareVersion(ctx)
 		if err != nil {
-			log.Printf("[connector] device %s (%s): version check failed: %v", d.ID, d.Host, err)
+			log.Printf("device %s (%s): version check failed: %v", d.ID, d.Host, err)
 			continue
 		}
-		log.Printf("[connector] device %s (%s): software version %s", d.ID, d.Host, ver)
+		log.Printf("device %s (%s): software version %s", d.ID, d.Host, ver)
 		if repErr := w.client.ReportDeviceInfo(d.ID, ver); repErr != nil {
-			log.Printf("[connector] device %s: report version: %v", d.ID, repErr)
+			log.Printf("device %s: report version: %v", d.ID, repErr)
 		}
 	}
 }
@@ -441,7 +452,7 @@ func (w *Worker) reportCurrentCerts(ctx context.Context) {
 	}
 	devices, err := w.client.GetDevices()
 	if err != nil {
-		log.Printf("[connector] fetch device list: %v - falling back to yaml", err)
+		log.Printf("fetch device list: %v - falling back to yaml", err)
 		// Fall back to yaml device list.
 		for _, d := range w.cfg.Devices {
 			w.reportOneCert(d.ID, d.Host, d.Port, d.SkipVerify)
@@ -450,7 +461,7 @@ func (w *Worker) reportCurrentCerts(ctx context.Context) {
 	}
 	for _, d := range devices {
 		if d.Status == "inactive" {
-			log.Printf("[connector] device %s (%s): disabled in CertForge - skipping", d.ID, d.Host)
+			log.Printf("device %s (%s): disabled in CertForge - skipping", d.ID, d.Host)
 			continue
 		}
 		// Try to instantiate the driver so devices that implement CertReader can
@@ -494,14 +505,14 @@ func (w *Worker) reportOneCert(deviceID, host string, port int, skipVerify bool)
 	}
 	info, err := tlsReadCert(host, port, skipVerify)
 	if err != nil {
-		log.Printf("[connector] cert-read %s (%s:%d): %v", deviceID, host, port, err)
+		log.Printf("cert-read %s (%s:%d): %v", deviceID, host, port, err)
 		return
 	}
 	if err := w.client.ReportCert(deviceID, info); err != nil {
-		log.Printf("[connector] cert-report %s: %v", deviceID, err)
+		log.Printf("cert-report %s: %v", deviceID, err)
 		return
 	}
-	log.Printf("[connector] cert-report %s: cn=%q not_after=%s", deviceID, info.CN, info.NotAfter.Format("2006-01-02"))
+	log.Printf("cert-report %s: cn=%q not_after=%s", deviceID, info.CN, info.NotAfter.Format("2006-01-02"))
 }
 
 // reportOneCertViaDevice uses the device's CertReader interface (if implemented)
@@ -516,7 +527,7 @@ func (w *Worker) reportOneCertViaDevice(ctx context.Context, deviceID, host stri
 	}
 	di, err := cr.ReadCert(ctx)
 	if err != nil {
-		log.Printf("[connector] cert-read %s: api read failed (%v), falling back to TLS dial", deviceID, err)
+		log.Printf("cert-read %s: api read failed (%v), falling back to TLS dial", deviceID, err)
 		w.reportOneCert(deviceID, host, port, skipVerify)
 		return
 	}
@@ -527,10 +538,10 @@ func (w *Worker) reportOneCertViaDevice(ctx context.Context, deviceID, host stri
 		NotAfter: notAfter,
 	}
 	if err := w.client.ReportCert(deviceID, info); err != nil {
-		log.Printf("[connector] cert-report %s: %v", deviceID, err)
+		log.Printf("cert-report %s: %v", deviceID, err)
 		return
 	}
-	log.Printf("[connector] cert-report %s: cn=%q not_after=%s (via api)", deviceID, di.CN, notAfter.Format("2006-01-02"))
+	log.Printf("cert-report %s: cn=%q not_after=%s (via api)", deviceID, di.CN, notAfter.Format("2006-01-02"))
 }
 
 func (w *Worker) poll(ctx context.Context) {
@@ -539,17 +550,17 @@ func (w *Worker) poll(ctx context.Context) {
 	}
 	jobs, err := w.client.PollJobs()
 	if err != nil {
-		log.Printf("[connector] poll error: %v", err)
+		log.Printf("poll error: %v", err)
 		return
 	}
 	if len(jobs) == 0 {
-		log.Printf("[connector] poll: ok, no pending jobs")
+		log.Printf("poll: ok, no pending jobs")
 		return
 	}
-	log.Printf("[connector] poll: %d job(s) to process", len(jobs))
+	log.Printf("poll: %d job(s) to process", len(jobs))
 	for _, j := range jobs {
 		if err := w.executeJob(ctx, j); err != nil {
-			log.Printf("[connector] job %s (%s): %v", j.ID, j.DeviceName, err)
+			log.Printf("job %s (%s): %v", j.ID, j.DeviceName, err)
 		}
 	}
 }
@@ -557,19 +568,19 @@ func (w *Worker) poll(ctx context.Context) {
 func (w *Worker) executeJob(ctx context.Context, j Job) error {
 	// pending_approval: waiting for a human to approve the request in CertForge.
 	if j.Status == "pending_approval" {
-		log.Printf("[connector] job %s: awaiting approval in CertForge — waiting", j.ID)
+		log.Printf("job %s: awaiting approval in CertForge — waiting", j.ID)
 		return nil
 	}
 	// pending_acme: server is running ACME in the background; wait for cert_ready.
 	if j.Status == "pending_acme" {
-		log.Printf("[connector] job %s: ACME issuance in progress on server — waiting", j.ID)
+		log.Printf("job %s: ACME issuance in progress on server — waiting", j.ID)
 		return nil
 	}
 
 	// cert_ready: server issued the cert via ACME after the connector's submitCSR returned.
 	// Install the private key (if the server generated it externally) then the cert.
 	if j.Status == "cert_ready" && j.Certificate != "" {
-		log.Printf("[connector] job %s: cert_ready — installing on %s", j.ID, j.DeviceName)
+		log.Printf("job %s: cert_ready — installing on %s", j.ID, j.DeviceName)
 		effective := DeviceConfig{
 			ID:         j.DeviceID,
 			Type:       j.DeviceType,
@@ -598,7 +609,7 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 		// Install the key first so the device has it before the cert arrives.
 		if j.ExternalKeyPEM != "" {
 			if ki, ok := dev.(device.PrivateKeyInstaller); ok {
-				log.Printf("[connector] job %s: installing external private key on %s", j.ID, j.DeviceName)
+				log.Printf("job %s: installing external private key on %s", j.ID, j.DeviceName)
 				if err := ki.InstallPrivateKey(ctx, j.ExternalKeyPEM); err != nil {
 					return fmt.Errorf("install private key: %w", err)
 				}
@@ -613,7 +624,7 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 		// installing the CA chain (slots 2+), so its error covers both operations.
 		if installer, ok := dev.(device.TrustedRootInstaller); ok {
 			if chain := pemChain(j.Certificate); chain != "" {
-				log.Printf("[connector] job %s: installing trusted root chain on %s", j.ID, j.DeviceName)
+				log.Printf("job %s: installing trusted root chain on %s", j.ID, j.DeviceName)
 				if err := installer.InstallTrustedRoot(ctx, chain); err != nil {
 					// PermanentError: the device driver has determined this error will
 					// never resolve with a retry (e.g. Ribbon 15020 firmware limitation).
@@ -621,14 +632,14 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 					// every poll cycle and the user gets a clear error in the UI.
 					var permErr *device.PermanentError
 					if errors.As(err, &permErr) {
-						log.Printf("[connector] job %s: permanent cert install failure on %s — marking failed: %v", j.ID, j.DeviceName, err)
+						log.Printf("job %s: permanent cert install failure on %s — marking failed: %v", j.ID, j.DeviceName, err)
 						if mfErr := w.client.MarkJobFailed(j.ID, err.Error()); mfErr != nil {
-							log.Printf("[connector] job %s: mark-failed: %v", j.ID, mfErr)
+							log.Printf("job %s: mark-failed: %v", j.ID, mfErr)
 						}
 						return err
 					}
 					// Transient failure — leave the job cert_ready so the next poll retries.
-					log.Printf("[connector] job %s: CA chain / cert install failed: %v", j.ID, err)
+					log.Printf("job %s: CA chain / cert install failed: %v", j.ID, err)
 					return err
 				}
 			}
@@ -636,20 +647,20 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 		// Persist the changes — some devices (e.g. AudioCodes) stage cert uploads in
 		// RAM and revert on restart until an explicit save is issued.
 		if saver, ok := dev.(device.ConfigSaver); ok {
-			log.Printf("[connector] job %s: saving configuration on %s", j.ID, j.DeviceName)
+			log.Printf("job %s: saving configuration on %s", j.ID, j.DeviceName)
 			if err := saver.SaveConfiguration(ctx); err != nil {
-				log.Printf("[connector] job %s: save configuration: %v (cert uploaded, marking done anyway)", j.ID, err)
+				log.Printf("job %s: save configuration: %v (cert uploaded, marking done anyway)", j.ID, err)
 			}
 		}
 		if err := w.client.MarkDone(j.ID, ""); err != nil {
-			log.Printf("[connector] job %s: mark done failed: %v", j.ID, err)
+			log.Printf("job %s: mark done failed: %v", j.ID, err)
 		}
-		log.Printf("[connector] job %s: complete - cert installed on %s", j.ID, j.DeviceName)
+		log.Printf("job %s: complete - cert installed on %s", j.ID, j.DeviceName)
 		// After a successful install, read back the cert from the device so the
 		// server's "current cert" display updates immediately without requiring a
 		// manual query. Non-fatal: if the read-back fails the next scheduled
 		// poll will pick it up.
-		log.Printf("[connector] job %s: reading back installed cert from %s", j.ID, j.DeviceName)
+		log.Printf("job %s: reading back installed cert from %s", j.ID, j.DeviceName)
 		if _, ok := dev.(device.CertReader); ok {
 			w.reportOneCertViaDevice(ctx, j.DeviceID, j.Host, j.Port, j.SkipVerify, dev)
 		} else {
@@ -663,7 +674,7 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 	// profile cert, not the management-port self-signed cert). Fall back to a raw
 	// TLS dial if no credentials are available or the driver doesn't implement ReadCert.
 	if j.Status == "pending_query" {
-		log.Printf("[connector] job %s: querying cert on %s (%s:%d)", j.ID, j.DeviceName, j.Host, j.Port)
+		log.Printf("job %s: querying cert on %s (%s:%d)", j.ID, j.DeviceName, j.Host, j.Port)
 		queryCfg := DeviceConfig{
 			ID:         j.DeviceID,
 			Type:       j.DeviceType,
@@ -693,7 +704,7 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 			w.reportOneCert(j.DeviceID, j.Host, j.Port, j.SkipVerify)
 		}
 		if err := w.client.MarkDone(j.ID, ""); err != nil {
-			log.Printf("[connector] job %s: mark done failed: %v", j.ID, err)
+			log.Printf("job %s: mark done failed: %v", j.ID, err)
 		}
 		return nil
 	}
@@ -729,9 +740,9 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 	// Report firmware version if the driver supports it (non-fatal).
 	if v, ok := dev.(device.Versioned); ok {
 		if ver, verErr := v.SoftwareVersion(ctx); verErr == nil && ver != "" {
-			log.Printf("[connector] job %s: device software version: %s", j.ID, ver)
+			log.Printf("job %s: device software version: %s", j.ID, ver)
 			if repErr := w.client.ReportDeviceInfo(j.DeviceID, ver); repErr != nil {
-				log.Printf("[connector] job %s: report device info: %v", j.ID, repErr)
+				log.Printf("job %s: report device info: %v", j.ID, repErr)
 			}
 		}
 	}
@@ -748,7 +759,7 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 
 	var csrPEM string
 	if gen, ok := dev.(device.CSRGenerator); ok {
-		log.Printf("[connector] job %s: generating new key+CSR on %s", j.ID, j.DeviceName)
+		log.Printf("job %s: generating new key+CSR on %s", j.ID, j.DeviceName)
 		subject := device.CertSubject{
 			CN: j.SubjectCN,
 			O:  j.SubjectO,
@@ -772,7 +783,7 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 			return fmt.Errorf("generate CSR: %w", err)
 		}
 	} else {
-		log.Printf("[connector] job %s: pulling CSR from %s (%s:%d ctx %d)",
+		log.Printf("job %s: pulling CSR from %s (%s:%d ctx %d)",
 			j.ID, j.DeviceName, j.Host, j.Port, j.TLSContext)
 		csrPEM, err = dev.PullCSR(ctx)
 		if err != nil {
@@ -790,7 +801,7 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 			// tell the server to mark this job failed so PollJobs stops returning it and
 			// the connector stops regenerating a new device key on every poll cycle.
 			if mfErr := w.client.MarkJobFailed(j.ID, err.Error()); mfErr != nil {
-				log.Printf("[connector] job %s: mark-failed: %v", j.ID, mfErr)
+				log.Printf("job %s: mark-failed: %v", j.ID, mfErr)
 			}
 			return err
 		}
@@ -814,23 +825,23 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 			if net.ParseIP(cn) == nil && cn != "" {
 				extKey, extCSR, genErr := generateExternalCSR(cn, j.SubjectO, j.SubjectOU, j.SubjectL, j.SubjectST, j.SubjectC)
 				if genErr != nil {
-					log.Printf("[connector] job %s: external CSR generation failed: %v", j.ID, genErr)
+					log.Printf("job %s: external CSR generation failed: %v", j.ID, genErr)
 				} else {
-					log.Printf("[connector] job %s: generated external key+CSR for %s (ACME SAN flow)", j.ID, cn)
+					log.Printf("job %s: generated external key+CSR for %s (ACME SAN flow)", j.ID, cn)
 					csrPEM = extCSR
 					externalKeyPEM = extKey
 				}
 			}
 		}
 
-		log.Printf("[connector] job %s: submitting CSR to CertForge", j.ID)
+		log.Printf("job %s: submitting CSR to CertForge", j.ID)
 		result, err := w.client.SubmitCSR(j.ID, csrPEM, externalKeyPEM)
 		if err != nil {
 			return fmt.Errorf("submit CSR: %w", err)
 		}
 		// 202 cases: server queued for approval or ACME is running — nothing to do this cycle.
 		if result.Status == "pending_approval" || result.Status == "pending_acme" {
-			log.Printf("[connector] job %s: CSR submitted — awaiting %s on server", j.ID, result.Status)
+			log.Printf("job %s: CSR submitted — awaiting %s on server", j.ID, result.Status)
 			return nil
 		}
 		if result.Certificate == "" {
@@ -839,7 +850,7 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 		certPEM = result.Certificate
 	}
 
-	log.Printf("[connector] job %s: installing cert on %s", j.ID, j.DeviceName)
+	log.Printf("job %s: installing cert on %s", j.ID, j.DeviceName)
 	if err := dev.InstallCert(ctx, certPEM); err != nil {
 		return fmt.Errorf("install cert: %w", err)
 	}
@@ -847,9 +858,9 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 	// Push the signing chain into the device's trusted root store if supported.
 	if installer, ok := dev.(device.TrustedRootInstaller); ok {
 		if chain := pemChain(certPEM); chain != "" {
-			log.Printf("[connector] job %s: installing trusted root chain on %s", j.ID, j.DeviceName)
+			log.Printf("job %s: installing trusted root chain on %s", j.ID, j.DeviceName)
 			if err := installer.InstallTrustedRoot(ctx, chain); err != nil {
-				log.Printf("[connector] job %s: install trusted root: %v (cert is installed, continuing)", j.ID, err)
+				log.Printf("job %s: install trusted root: %v (cert is installed, continuing)", j.ID, err)
 			}
 		}
 	}
@@ -857,9 +868,9 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 	// Persist the changes — some devices (e.g. AudioCodes) stage cert uploads in
 	// RAM and revert on restart until an explicit save is issued.
 	if saver, ok := dev.(device.ConfigSaver); ok {
-		log.Printf("[connector] job %s: saving configuration on %s", j.ID, j.DeviceName)
+		log.Printf("job %s: saving configuration on %s", j.ID, j.DeviceName)
 		if err := saver.SaveConfiguration(ctx); err != nil {
-			log.Printf("[connector] job %s: save configuration: %v (cert uploaded, marking done anyway)", j.ID, err)
+			log.Printf("job %s: save configuration: %v (cert uploaded, marking done anyway)", j.ID, err)
 		}
 	}
 
@@ -868,7 +879,7 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 	if signedLocally {
 		if info, parseErr := parseCertPEM(certPEM); parseErr == nil {
 			if repErr := w.client.ReportCert(j.DeviceID, info); repErr != nil {
-				log.Printf("[connector] job %s: report cert to CertForge: %v", j.ID, repErr)
+				log.Printf("job %s: report cert to CertForge: %v", j.ID, repErr)
 			}
 		}
 	}
@@ -878,9 +889,9 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 		certForDone = certPEM
 	}
 	if err := w.client.MarkDone(j.ID, certForDone); err != nil {
-		log.Printf("[connector] job %s: mark done failed (cert is installed): %v", j.ID, err)
+		log.Printf("job %s: mark done failed (cert is installed): %v", j.ID, err)
 	}
-	log.Printf("[connector] job %s: complete - cert installed on %s", j.ID, j.DeviceName)
+	log.Printf("job %s: complete - cert installed on %s", j.ID, j.DeviceName)
 	return nil
 }
 
@@ -896,7 +907,7 @@ func (w *Worker) signLocally(ctx context.Context, jobID, csrPEM string) (string,
 	// Try governed path first.
 	if len(w.localCAs) > 0 {
 		cn, sans, keyAlgo, keyBits := csrMeta(csrPEM)
-		log.Printf("[connector] job %s: requesting DTP authorization for local signing (cn=%s)", jobID, cn)
+		log.Printf("job %s: requesting DTP authorization for local signing (cn=%s)", jobID, cn)
 
 		auth, err := w.client.AuthorizeLocalSigning(jobID, cn, sans, keyAlgo, keyBits)
 		if err != nil {
@@ -904,7 +915,7 @@ func (w *Worker) signLocally(ctx context.Context, jobID, csrPEM string) (string,
 		}
 		if !auth.Approved {
 			if auth.UseSubmitCSR {
-				log.Printf("[connector] job %s: device CA is not private_connector type — falling back to submitCSR", jobID)
+				log.Printf("job %s: device CA is not private_connector type — falling back to submitCSR", jobID)
 				return "", errUseSubmitCSR
 			}
 			return "", fmt.Errorf("local signing denied by CertForge: %s", auth.Reason)
@@ -915,11 +926,11 @@ func (w *Worker) signLocally(ctx context.Context, jobID, csrPEM string) (string,
 			// This connector doesn't hold the key for the approved CA connector.
 			// Delegate to the server-mediated sign-request path: submit the CSR to
 			// CertForge and let the CA connector that does hold the key pick it up.
-			log.Printf("[connector] job %s: server approved ca_connector_id=%s — key not held locally, delegating to server sign-request path", jobID, auth.CAConnectorID)
+			log.Printf("job %s: server approved ca_connector_id=%s — key not held locally, delegating to server sign-request path", jobID, auth.CAConnectorID)
 			return "", errUseSubmitCSR
 		}
 
-		log.Printf("[connector] job %s: signing with governed local CA ca_connector_id=%s validity=%dd dtp=%s", jobID, auth.CAConnectorID, auth.ValidityDays, auth.DTPID)
+		log.Printf("job %s: signing with governed local CA ca_connector_id=%s validity=%dd dtp=%s", jobID, auth.CAConnectorID, auth.ValidityDays, auth.DTPID)
 		var subj *SubjectTemplate
 		if auth.SubjectO != "" || auth.SubjectOU != "" || auth.SubjectC != "" || auth.SubjectST != "" || auth.SubjectL != "" {
 			subj = &SubjectTemplate{
@@ -951,7 +962,7 @@ func (w *Worker) pollSignRequests() {
 
 	reqs, err := w.client.GetAllSignRequests()
 	if err != nil {
-		log.Printf("[connector] sign-requests: fetch agent requests: %v", err)
+		log.Printf("sign-requests: fetch agent requests: %v", err)
 		return
 	}
 
@@ -969,17 +980,17 @@ func (w *Worker) pollSignRequests() {
 			if validity == 0 {
 				validity = 365 // server didn't specify; use a safe default
 			}
-			log.Printf("[connector] sign-request %s: signing via server-vault for %s (validity=%dd)", req.ID, req.Domains, validity)
+			log.Printf("sign-request %s: signing via server-vault for %s (validity=%dd)", req.ID, req.Domains, validity)
 			certPEM, err := VaultSignCSR(vaultCfg, req.CSRPEM, validity)
 			if err != nil {
-				log.Printf("[connector] sign-request %s: vault sign CSR: %v", req.ID, err)
+				log.Printf("sign-request %s: vault sign CSR: %v", req.ID, err)
 				continue
 			}
 			if err := w.client.SubmitSignRequest(connID, req.ID, certPEM); err != nil {
-				log.Printf("[connector] sign-request %s: submit: %v", req.ID, err)
+				log.Printf("sign-request %s: submit: %v", req.ID, err)
 				continue
 			}
-			log.Printf("[connector] sign-request %s: complete via server-vault (%s)", req.ID, req.Domains)
+			log.Printf("sign-request %s: complete via server-vault (%s)", req.ID, req.Domains)
 
 		case w.vaultCAs[connID].cfg.Addr != "":
 			// YAML-configured Vault PKI fallback.
@@ -987,17 +998,17 @@ func (w *Worker) pollSignRequests() {
 			if validity == 0 {
 				validity = vca.validDays
 			}
-			log.Printf("[connector] sign-request %s: signing via yaml-vault for %s (validity=%dd)", req.ID, req.Domains, validity)
+			log.Printf("sign-request %s: signing via yaml-vault for %s (validity=%dd)", req.ID, req.Domains, validity)
 			certPEM, err := VaultSignCSR(vca.cfg, req.CSRPEM, validity)
 			if err != nil {
-				log.Printf("[connector] sign-request %s: vault sign CSR: %v", req.ID, err)
+				log.Printf("sign-request %s: vault sign CSR: %v", req.ID, err)
 				continue
 			}
 			if err := w.client.SubmitSignRequest(connID, req.ID, certPEM); err != nil {
-				log.Printf("[connector] sign-request %s: submit: %v", req.ID, err)
+				log.Printf("sign-request %s: submit: %v", req.ID, err)
 				continue
 			}
-			log.Printf("[connector] sign-request %s: complete via yaml-vault (%s)", req.ID, req.Domains)
+			log.Printf("sign-request %s: complete via yaml-vault (%s)", req.ID, req.Domains)
 
 		case w.localCAs[connID] != nil:
 			// File-backed local CA.
@@ -1005,20 +1016,20 @@ func (w *Worker) pollSignRequests() {
 			if validity == 0 {
 				validity = ca.validDays
 			}
-			log.Printf("[connector] sign-request %s: signing via local CA for %s (validity=%dd)", req.ID, req.Domains, validity)
+			log.Printf("sign-request %s: signing via local CA for %s (validity=%dd)", req.ID, req.Domains, validity)
 			certPEM, err := ca.SignCSR(req.CSRPEM, validity, nil)
 			if err != nil {
-				log.Printf("[connector] sign-request %s: sign CSR: %v", req.ID, err)
+				log.Printf("sign-request %s: sign CSR: %v", req.ID, err)
 				continue
 			}
 			if err := w.client.SubmitSignRequest(connID, req.ID, certPEM); err != nil {
-				log.Printf("[connector] sign-request %s: submit: %v", req.ID, err)
+				log.Printf("sign-request %s: submit: %v", req.ID, err)
 				continue
 			}
-			log.Printf("[connector] sign-request %s: complete via local CA (%s)", req.ID, req.Domains)
+			log.Printf("sign-request %s: complete via local CA (%s)", req.ID, req.Domains)
 
 		default:
-			log.Printf("[connector] sign-request %s: no CA configured for connector %s — skipping", req.ID, connID)
+			log.Printf("sign-request %s: no CA configured for connector %s — skipping", req.ID, connID)
 		}
 	}
 }

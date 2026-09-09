@@ -17,6 +17,7 @@ var Version = "dev"
 
 func main() {
 	log.SetOutput(os.Stdout) // stdout keeps PowerShell from treating log lines as errors
+	log.SetPrefix("[connector] ") // replaced with the server-assigned agent name on first successful check-in
 
 	// Sub-commands: enroll, (default: run)
 	if len(os.Args) > 1 && os.Args[1] == "enroll" {
