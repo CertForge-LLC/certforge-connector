@@ -5,9 +5,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -16,7 +18,10 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/certforge/certforge-connector/internal/device"
@@ -53,6 +58,13 @@ type Worker struct {
 	// available for this agent (empty list or 403). Suppresses further polling
 	// so device-only connectors don't emit repeated error logs.
 	noAppJobs bool
+	// caChainCache records the SHA-256 fingerprint of the CA chain last
+	// successfully installed on each device (keyed by device ID). Used to
+	// skip InstallTrustedRoot when the chain hasn't changed — avoids
+	// redundant firmware slot operations (e.g. Ribbon 15020 on occupied slots).
+	caChainCache    map[string]string // device ID → hex SHA-256 of CA PEM
+	caChainCacheMu  sync.Mutex
+	caChainCachePath string // path to the JSON persistence file (may be empty)
 }
 
 func NewWorker(cfg *Config, version string) (*Worker, error) {
@@ -74,12 +86,24 @@ func NewWorker(cfg *Config, version string) (*Worker, error) {
 		log.Printf("auth: Bearer token")
 	}
 
+	caChainCache := make(map[string]string)
+	var caChainCachePath string
+	if cfg.ConfigDir != "" {
+		caChainCachePath = filepath.Join(cfg.ConfigDir, "ca_chain_fingerprints.json")
+		if data, err := os.ReadFile(caChainCachePath); err == nil {
+			_ = json.Unmarshal(data, &caChainCache)
+			log.Printf("loaded %d CA chain fingerprint(s) from %s", len(caChainCache), caChainCachePath)
+		}
+	}
+
 	w := &Worker{
-		cfg:      cfg,
-		client:   cfClient,
-		version:  version,
-		localCAs: make(map[string]*LocalCA),
-		vaultCAs: make(map[string]vaultCAEntry),
+		cfg:              cfg,
+		client:           cfClient,
+		version:          version,
+		localCAs:         make(map[string]*LocalCA),
+		vaultCAs:         make(map[string]vaultCAEntry),
+		caChainCache:     caChainCache,
+		caChainCachePath: caChainCachePath,
 	}
 
 	// Collect all private CA configs: private_cas[] + private_ca (backward compat).
@@ -870,11 +894,21 @@ func (w *Worker) executeJob(ctx context.Context, j Job) error {
 	}
 
 	// Push the signing chain into the device's trusted root store if supported.
+	// Skip if the CA chain fingerprint matches the last successful install —
+	// the device already has the correct trust anchors, and redundant slot
+	// operations can trigger firmware chain-verification errors (e.g. Ribbon
+	// 15020 when a slot is already occupied by a matching cert).
 	if installer, ok := dev.(device.TrustedRootInstaller); ok {
 		if chain := pemChain(certPEM); chain != "" {
-			log.Printf("job %s: installing trusted root chain on %s", j.ID, j.DeviceName)
-			if err := installer.InstallTrustedRoot(ctx, chain); err != nil {
-				log.Printf("job %s: install trusted root: %v (cert is installed, continuing)", j.ID, err)
+			if w.caChainAlreadyInstalled(j.DeviceID, chain) {
+				log.Printf("job %s: CA chain fingerprint matches last install — skipping InstallTrustedRoot on %s", j.ID, j.DeviceName)
+			} else {
+				log.Printf("job %s: installing trusted root chain on %s", j.ID, j.DeviceName)
+				if err := installer.InstallTrustedRoot(ctx, chain); err != nil {
+					log.Printf("job %s: install trusted root: %v (cert is installed, continuing)", j.ID, err)
+				} else {
+					w.recordCAChainInstalled(j.DeviceID, chain)
+				}
 			}
 		}
 	}
@@ -1119,4 +1153,53 @@ func generateExternalCSR(cn, o, ou, l, st, c string) (keyPEM, csrPEM string, err
 	keyPEM = string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}))
 	csrPEM = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER}))
 	return keyPEM, csrPEM, nil
+}
+
+// caChainFingerprint returns the hex-encoded SHA-256 of the normalized CA PEM.
+// All whitespace is stripped before hashing so formatting differences don't
+// produce different fingerprints for the same chain content.
+func caChainFingerprint(caPEM string) string {
+	h := sha256.Sum256([]byte(strings.TrimSpace(caPEM)))
+	return hex.EncodeToString(h[:])
+}
+
+// caChainAlreadyInstalled returns true when the CA chain for deviceID was
+// previously installed successfully and its fingerprint matches caPEM.
+// Returns false when unknown (first install, fingerprint mismatch, or cache miss).
+func (w *Worker) caChainAlreadyInstalled(deviceID, caPEM string) bool {
+	w.caChainCacheMu.Lock()
+	stored, ok := w.caChainCache[deviceID]
+	w.caChainCacheMu.Unlock()
+	return ok && stored == caChainFingerprint(caPEM)
+}
+
+// recordCAChainInstalled saves the CA chain fingerprint for deviceID after a
+// successful InstallTrustedRoot call. Persists to disk so the cache survives
+// connector restarts.
+func (w *Worker) recordCAChainInstalled(deviceID, caPEM string) {
+	fp := caChainFingerprint(caPEM)
+	w.caChainCacheMu.Lock()
+	w.caChainCache[deviceID] = fp
+	snapshot := make(map[string]string, len(w.caChainCache))
+	for k, v := range w.caChainCache {
+		snapshot[k] = v
+	}
+	w.caChainCacheMu.Unlock()
+
+	if w.caChainCachePath == "" {
+		return
+	}
+	data, err := json.MarshalIndent(snapshot, "", "  ")
+	if err != nil {
+		return
+	}
+	// Write atomically via temp file so a crash mid-write doesn't corrupt the cache.
+	tmp := w.caChainCachePath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		log.Printf("[ca-chain-cache] write %s: %v", tmp, err)
+		return
+	}
+	if err := os.Rename(tmp, w.caChainCachePath); err != nil {
+		log.Printf("[ca-chain-cache] rename %s → %s: %v", tmp, w.caChainCachePath, err)
+	}
 }

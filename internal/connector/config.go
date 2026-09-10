@@ -3,6 +3,7 @@ package connector
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/certforge/certforge-connector/internal/device"
@@ -23,6 +24,11 @@ type Config struct {
 	Devices       []DeviceConfig    `yaml:"devices"`
 	PrivateCA     *PrivateCAConfig  `yaml:"private_ca"`  // single CA (backward compat)
 	PrivateCAs    []PrivateCAConfig `yaml:"private_cas"` // multiple CAs (use when managing several PKI mounts)
+
+	// ConfigDir is set automatically from the path passed to LoadConfig.
+	// It is not part of the YAML file; the worker uses it to locate state
+	// files (e.g. the per-device CA-chain fingerprint cache).
+	ConfigDir string `yaml:"-"`
 
 	// mTLS credentials (written by "certforge-connector enroll").
 	// When set, the connector connects directly to the CertForge mTLS port,
@@ -171,6 +177,10 @@ func LoadConfig(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	// Record the directory the config file lives in. The worker uses this to
+	// locate state files (e.g. the CA-chain fingerprint cache) without needing
+	// a separate config field.
+	cfg.ConfigDir = filepath.Dir(path)
 	return validateConfig(&cfg)
 }
 
