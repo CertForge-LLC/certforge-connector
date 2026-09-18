@@ -235,6 +235,16 @@ func (c *Client) ListAppJobs() ([]AppJob, error) {
 	return jobs, nil
 }
 
+// ListApps returns all app connector apps registered for this agent, used for
+// health probing (cert path writability and reload command availability checks).
+func (c *Client) ListApps() ([]RemoteApp, error) {
+	var apps []RemoteApp
+	if err := c.get("/api/v1/connector/app-list", &apps); err != nil {
+		return nil, err
+	}
+	return apps, nil
+}
+
 // SubmitAppCSR posts a PEM-encoded CSR for the given app job.
 // Returns the new job status (pending_approval or pending_acme).
 func (c *Client) SubmitAppCSR(jobID, csrPEM string) (string, error) {
@@ -446,13 +456,20 @@ type RegisterCapabilitiesResult struct {
 // connectorIDs lists all CA connector record IDs this process is driving; CertForge
 // checks each one and returns 403 if any are disabled.
 // pollIntervalSeconds is the connector's own configured interval; the server stores it for display.
-func (c *Client) RegisterCapabilities(deviceTypes []string, connectorIDs []string, backendVersions map[string]string, version string, pollIntervalSeconds int) (RegisterCapabilitiesResult, error) {
+// deviceProbes and appProbes carry the most recent health check results (may be nil).
+func (c *Client) RegisterCapabilities(deviceTypes []string, connectorIDs []string, backendVersions map[string]string, version string, pollIntervalSeconds int, deviceProbes []DeviceHealthProbe, appProbes []AppHealthProbe) (RegisterCapabilitiesResult, error) {
 	payload := map[string]any{
 		"device_types":          deviceTypes,
 		"connector_ids":         connectorIDs,
 		"backend_versions":      backendVersions,
 		"version":               version,
 		"poll_interval_seconds": pollIntervalSeconds,
+	}
+	if len(deviceProbes) > 0 {
+		payload["device_probes"] = deviceProbes
+	}
+	if len(appProbes) > 0 {
+		payload["app_probes"] = appProbes
 	}
 	body, _ := json.Marshal(payload)
 	var result RegisterCapabilitiesResult

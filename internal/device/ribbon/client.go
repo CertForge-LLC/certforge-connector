@@ -747,3 +747,13 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// Ping authenticates to the Ribbon REST API. A nil error means the device is
+// reachable and credentials are valid — sufficient for a health probe.
+func (c *Client) Ping(ctx context.Context) error {
+	if err := c.login(ctx); err != nil {
+		return err
+	}
+	c.logout(ctx)
+	return nil
+}

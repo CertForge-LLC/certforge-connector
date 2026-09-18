@@ -22,6 +22,13 @@ type Versioned interface {
 	SoftwareVersion(ctx context.Context) (string, error)
 }
 
+// Pinger is an optional interface for a lightweight connectivity and auth check.
+// When a driver implements Pinger, the health ticker calls Ping instead of a full
+// job-cycle connection. A nil error means the device is reachable and credentials work.
+type Pinger interface {
+	Ping(ctx context.Context) error
+}
+
 // CertSubject holds the certificate subject fields sent to the device for CSR generation.
 type CertSubject struct {
 	CN   string   // Common Name (FQDN or hostname)

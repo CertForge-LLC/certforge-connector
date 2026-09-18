@@ -42,6 +42,20 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+// Ping dials the WatchGuard SSH port. A successful TCP connection means the
+// device is reachable; WatchGuard doesn't expose a no-op auth probe so we
+// settle for network reachability as the health signal.
+func (c *Client) Ping(ctx context.Context) error {
+	addr := fmt.Sprintf("%s:%d", c.Host, c.sshPort())
+	d := net.Dialer{Timeout: 10 * time.Second}
+	conn, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return fmt.Errorf("watchguard: ping: %w", err)
+	}
+	conn.Close()
+	return nil
+}
+
 const defaultSSHPort = 4118
 
 // Client connects to a single WatchGuard Firebox via SSH.

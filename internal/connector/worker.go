@@ -58,6 +58,9 @@ type Worker struct {
 	// available for this agent (empty list or 403). Suppresses further polling
 	// so device-only connectors don't emit repeated error logs.
 	noAppJobs bool
+	// health holds the most-recent health probe results for devices and apps.
+	// Updated by the health ticker; snapshotted on each registerCapabilities call.
+	health healthState
 	// caChainCache records the SHA-256 fingerprint of the CA chain last
 	// successfully installed on each device (keyed by device ID). Used to
 	// skip InstallTrustedRoot when the chain hasn't changed — avoids
@@ -165,10 +168,12 @@ func (w *Worker) Run(ctx context.Context) {
 	certTicker := time.NewTicker(certReportInterval)
 	inventoryTicker := time.NewTicker(inventorySyncInterval)
 	capsTicker := time.NewTicker(capsCheckInterval)
+	healthTicker := time.NewTicker(healthProbeInterval)
 	defer jobTicker.Stop()
 	defer certTicker.Stop()
 	defer inventoryTicker.Stop()
 	defer capsTicker.Stop()
+	defer healthTicker.Stop()
 
 	// Check capabilities first so disabled state is known before any polling.
 	// The server resolves the agent name from the mTLS cert label; if the DB
@@ -188,6 +193,7 @@ func (w *Worker) Run(ctx context.Context) {
 		w.reportCurrentCerts(ctx)
 	}
 	w.syncInventory(ctx)
+	go w.runHealthProbes(ctx) // first probe runs async so startup isn't delayed
 
 	for {
 		select {
@@ -215,6 +221,8 @@ func (w *Worker) Run(ctx context.Context) {
 					w.poll(ctx)
 				}
 			}
+		case <-healthTicker.C:
+			go w.runHealthProbes(ctx)
 		}
 	}
 }
@@ -265,7 +273,8 @@ func (w *Worker) registerCapabilities() {
 	// Report our locally-configured poll interval so the platform UI can display it.
 	pollSecs := int(w.cfg.PollInterval.Seconds())
 
-	result, err := w.client.RegisterCapabilities(SupportedDeviceTypes(), ids, backendVersions, w.version, pollSecs)
+	dProbes, aProbes := w.health.snapshot()
+	result, err := w.client.RegisterCapabilities(SupportedDeviceTypes(), ids, backendVersions, w.version, pollSecs, dProbes, aProbes)
 	if err != nil {
 		if isConnectorDisabled(err) {
 			if !w.disabled {
