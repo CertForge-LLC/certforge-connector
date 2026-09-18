@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"sync"
 	"time"
 
@@ -166,8 +167,16 @@ func probeApp(app RemoteApp) AppHealthProbe {
 				break
 			}
 		}
-		if _, err := os.Stat(bin); err != nil {
-			p.Error = fmt.Sprintf("reload cmd not found: %v", err)
+		var checkErr error
+		if len(bin) > 0 && bin[0] == '/' {
+			// Absolute path — stat directly.
+			_, checkErr = os.Stat(bin)
+		} else {
+			// Relative name (e.g. "systemctl", "nginx") — search PATH.
+			_, checkErr = exec.LookPath(bin)
+		}
+		if checkErr != nil {
+			p.Error = fmt.Sprintf("reload cmd not found: %v", checkErr)
 			return p
 		}
 	}
@@ -218,6 +227,9 @@ func (w *Worker) runHealthProbes(ctx context.Context) {
 	}
 	w.health.setApps(aProbes)
 	log.Printf("health: probed %d app(s)", len(aProbes))
+
+	// Send results immediately rather than waiting for the next capsTicker fire.
+	w.registerCapabilities()
 }
 
 const healthProbeInterval = 5 * time.Minute
