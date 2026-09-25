@@ -492,8 +492,11 @@ func (c *Client) SaveConfiguration(ctx context.Context) error {
 	return nil
 }
 
-// Ping verifies connectivity and credentials by fetching the TLS context list.
+// Ping verifies connectivity and credentials using the /api/v1/status endpoint,
+// which is available on all Mediant firmware versions. ListTLSContexts is not
+// used here because some firmware versions return HTTP 404 for that URL even
+// though certificate management operations work fine.
 func (c *Client) Ping(ctx context.Context) error {
-	_, err := c.ListTLSContexts(ctx)
+	_, err := c.SoftwareVersion(ctx)
 	return err
 }
