@@ -22,6 +22,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -29,6 +30,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/pkg/sftp"
 )
 
 // pollAppJobs fetches pending and cert_ready app connector jobs and executes them.
@@ -226,30 +229,65 @@ func (w *Worker) deliverLocalFile(ctx context.Context, j AppJob) error {
 	return nil
 }
 
-// queryAppCert reads the cert at cert_path, parses it, and reports the expiry and
-// subject info back to CertForge. This is triggered by a Query Cert action in the UI.
+// queryAppCert reads the cert from its installed location, parses it, and reports
+// the expiry and subject info back to CertForge. For remote delivery modes it reads
+// via SSH; for local_file it reads the local cert_path.
 func (w *Worker) queryAppCert(ctx context.Context, j AppJob) error {
-	if j.CertPath == "" {
-		return fmt.Errorf("cert_path not configured for app %q", j.AppName)
+	var certPEM []byte
+	var readFrom string
+
+	switch j.DeliveryMode {
+	case "remote_file", "windows_cert_store":
+		path := j.RemoteCertPath
+		if path == "" {
+			return fmt.Errorf("remote_cert_path not configured for app %q", j.AppName)
+		}
+		sshClient, err := dialSSH(j)
+		if err != nil {
+			return fmt.Errorf("SSH connect for query: %w", err)
+		}
+		defer sshClient.Close()
+		sc, err := sftp.NewClient(sshClient)
+		if err != nil {
+			return fmt.Errorf("SFTP subsystem for query: %w", err)
+		}
+		defer sc.Close()
+		f, err := sc.Open(path)
+		if err != nil {
+			return fmt.Errorf("open remote cert %s: %w", path, err)
+		}
+		certPEM, err = io.ReadAll(f)
+		f.Close()
+		if err != nil {
+			return fmt.Errorf("read remote cert %s: %w", path, err)
+		}
+		readFrom = j.RemoteHost + ":" + path
+	default:
+		if j.CertPath == "" {
+			return fmt.Errorf("cert_path not configured for app %q", j.AppName)
+		}
+		var err error
+		certPEM, err = os.ReadFile(j.CertPath)
+		if err != nil {
+			return fmt.Errorf("read cert file %s: %w", j.CertPath, err)
+		}
+		readFrom = j.CertPath
 	}
-	certPEM, err := os.ReadFile(j.CertPath)
-	if err != nil {
-		return fmt.Errorf("read cert file %s: %w", j.CertPath, err)
-	}
+
 	block, _ := pem.Decode(certPEM)
 	if block == nil || block.Type != "CERTIFICATE" {
-		return fmt.Errorf("no certificate found in %s", j.CertPath)
+		return fmt.Errorf("no certificate found in %s", readFrom)
 	}
 	cert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
-		return fmt.Errorf("parse certificate from %s: %w", j.CertPath, err)
+		return fmt.Errorf("parse certificate from %s: %w", readFrom, err)
 	}
 	sans := cert.DNSNames
 	if len(sans) == 0 && cert.Subject.CommonName != "" {
 		sans = []string{cert.Subject.CommonName}
 	}
-	log.Printf("[app-connector] query job %s (%s): cert expires %s, CN=%s, SANs=%v",
-		j.ID, j.AppName, cert.NotAfter.Format("2006-01-02"), cert.Subject.CommonName, sans)
+	log.Printf("[app-connector] query job %s (%s): cert expires %s, CN=%s, SANs=%v (read from %s)",
+		j.ID, j.AppName, cert.NotAfter.Format("2006-01-02"), cert.Subject.CommonName, sans, readFrom)
 	if err := w.client.ReportAppCert(j.ID, cert.NotAfter, cert.Subject.CommonName, sans); err != nil {
 		return fmt.Errorf("report cert: %w", err)
 	}
