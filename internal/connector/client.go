@@ -223,6 +223,10 @@ type AppJob struct {
 	// The connector must write this to KeyPath instead of its locally-generated key so
 	// the private key matches the certificate returned by the CA.
 	KeyPEM string `json:"key_pem,omitempty"`
+	// TLS probe fields — populated when status=pending_tls_probe.
+	TLSProbeHost      string `json:"tls_probe_host,omitempty"`
+	TLSProbePort      string `json:"tls_probe_port,omitempty"`
+	TLSExpectedSerial string `json:"tls_expected_serial,omitempty"`
 }
 
 // ListAppJobs returns all pending and cert_ready app connector jobs assigned to this agent.
@@ -279,6 +283,22 @@ func (c *Client) ReportAppCert(jobID string, notAfter time.Time, cn string, sans
 func (c *Client) MarkAppJobFailed(jobID, reason string) error {
 	body, _ := json.Marshal(map[string]string{"error": reason})
 	return c.post("/api/v1/connector/apps/"+jobID+"/fail", body, nil)
+}
+
+// TLSProbeResult holds the outcome of a local TLS probe run by the connector agent.
+type TLSProbeResult struct {
+	TLSVersion    int    `json:"tls_version"`
+	CipherSuite   int    `json:"cipher_suite"`
+	CertSerial    string `json:"cert_serial"`
+	SerialMatch   bool   `json:"serial_match"`
+	AcceptsOldTLS bool   `json:"accepts_old_tls"`
+	Error         string `json:"error,omitempty"`
+}
+
+// ReportTLSProbe posts the result of a local TLS probe for a pending_tls_probe job.
+func (c *Client) ReportTLSProbe(jobID string, result TLSProbeResult) error {
+	body, _ := json.Marshal(result)
+	return c.post("/api/v1/connector/apps/"+jobID+"/tls-probe", body, nil)
 }
 
 // ConnectorScope is the sync scope for a private CA connector, fetched from CertForge.

@@ -17,15 +17,18 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // pollAppJobs fetches pending and cert_ready app connector jobs and executes them.
@@ -77,6 +80,8 @@ func (w *Worker) executeAppJob(ctx context.Context, j AppJob) error {
 		return w.deliverAppCert(ctx, j)
 	case "pending_query":
 		return w.queryAppCert(ctx, j)
+	case "pending_tls_probe":
+		return w.probeAppTLS(ctx, j)
 	default:
 		log.Printf("[app-connector] job %s: unexpected status %q — skipping", j.ID, j.Status)
 		return nil
@@ -220,6 +225,76 @@ func (w *Worker) queryAppCert(ctx context.Context, j AppJob) error {
 		j.ID, j.AppName, cert.NotAfter.Format("2006-01-02"), cert.Subject.CommonName, sans)
 	if err := w.client.ReportAppCert(j.ID, cert.NotAfter, cert.Subject.CommonName, sans); err != nil {
 		return fmt.Errorf("report cert: %w", err)
+	}
+	return nil
+}
+
+// probeAppTLS connects to the app's local TLS endpoint, reports the negotiated
+// protocol version and cert serial back to CertForge, and checks whether the
+// server accepts legacy TLS 1.0/1.1.
+func (w *Worker) probeAppTLS(ctx context.Context, j AppJob) error {
+	host := j.TLSProbeHost
+	if host == "" {
+		host = j.Domain
+	}
+	port := j.TLSProbePort
+	if port == "" {
+		port = "443"
+	}
+	addr := net.JoinHostPort(host, port)
+
+	log.Printf("[app-connector] tls probe job %s (%s): probing %s", j.ID, j.AppName, addr)
+
+	result := TLSProbeResult{}
+
+	// Primary probe — capture TLS version, cipher suite, and leaf cert serial.
+	dialCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	conn, err := (&tls.Dialer{
+		NetDialer: &net.Dialer{},
+		Config:    &tls.Config{InsecureSkipVerify: true, ServerName: host}, //nolint:gosec
+	}).DialContext(dialCtx, "tcp", addr)
+	if err != nil {
+		result.Error = err.Error()
+		log.Printf("[app-connector] tls probe job %s (%s): connect failed: %v", j.ID, j.AppName, err)
+		if reportErr := w.client.ReportTLSProbe(j.ID, result); reportErr != nil {
+			log.Printf("[app-connector] tls probe job %s: report: %v", j.ID, reportErr)
+		}
+		return nil // not a job failure — server records the probe error
+	}
+	state := conn.(*tls.Conn).ConnectionState()
+	conn.Close()
+
+	result.TLSVersion = int(state.Version)
+	result.CipherSuite = int(state.CipherSuite)
+	if len(state.PeerCertificates) > 0 {
+		result.CertSerial = state.PeerCertificates[0].SerialNumber.String()
+		if j.TLSExpectedSerial != "" {
+			result.SerialMatch = result.CertSerial == j.TLSExpectedSerial
+		}
+	}
+
+	// Secondary probe — test whether the server accepts TLS 1.1 or lower.
+	oldCtx, oldCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer oldCancel()
+	oldConn, oldErr := (&tls.Dialer{
+		NetDialer: &net.Dialer{},
+		Config: &tls.Config{ //nolint:gosec
+			InsecureSkipVerify: true,
+			ServerName:         host,
+			MaxVersion:         tls.VersionTLS11,
+		},
+	}).DialContext(oldCtx, "tcp", addr)
+	if oldErr == nil {
+		oldConn.Close()
+		result.AcceptsOldTLS = true
+	}
+
+	log.Printf("[app-connector] tls probe job %s (%s): tls=%d serial_match=%v accepts_old=%v",
+		j.ID, j.AppName, result.TLSVersion, result.SerialMatch, result.AcceptsOldTLS)
+
+	if err := w.client.ReportTLSProbe(j.ID, result); err != nil {
+		return fmt.Errorf("report tls probe: %w", err)
 	}
 	return nil
 }
