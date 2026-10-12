@@ -95,10 +95,11 @@ func (w *Worker) submitAppCSR(ctx context.Context, j AppJob) error {
 	if j.Domain == "" {
 		return fmt.Errorf("domain not set on app %q", j.AppName)
 	}
-	if j.KeyPath == "" {
+	isRemote := j.DeliveryMode == "remote_file" || j.DeliveryMode == "windows_cert_store"
+	if j.KeyPath == "" && !isRemote {
 		return fmt.Errorf("key_path not configured for app %q", j.AppName)
 	}
-	if j.CertPath == "" {
+	if j.CertPath == "" && !isRemote {
 		return fmt.Errorf("cert_path not configured for app %q", j.AppName)
 	}
 
@@ -120,10 +121,15 @@ func (w *Worker) submitAppCSR(ctx context.Context, j AppJob) error {
 
 	// Write private key before submitting the CSR — this way, if the connector restarts
 	// between submission and cert_ready, the key is already in place.
-	if err := writeFileAtomic(j.KeyPath, []byte(keyPEM), 0600); err != nil {
-		return fmt.Errorf("write private key to %s: %w", j.KeyPath, err)
+	// For remote delivery modes with no local key_path, stage the key in a temp file.
+	keyDest := j.KeyPath
+	if keyDest == "" {
+		keyDest = remoteKeyStaging(j.AppID)
 	}
-	log.Printf("[app-connector] job %s: private key written to %s", j.ID, j.KeyPath)
+	if err := writeFileAtomic(keyDest, []byte(keyPEM), 0600); err != nil {
+		return fmt.Errorf("write private key to %s: %w", keyDest, err)
+	}
+	log.Printf("[app-connector] job %s: private key written to %s", j.ID, keyDest)
 
 	status, err := w.client.SubmitAppCSR(j.ID, csrPEM)
 	if err != nil {
@@ -136,11 +142,44 @@ func (w *Worker) submitAppCSR(ctx context.Context, j AppJob) error {
 // deliverAppCert writes the issued cert bundle and optional chain file, runs the reload
 // command, and marks the job done on the server.
 func (w *Worker) deliverAppCert(ctx context.Context, j AppJob) error {
+	switch j.DeliveryMode {
+	case "remote_file":
+		log.Printf("[app-connector] job %s (%s): cert_ready — remote_file delivery to %s:%s",
+			j.ID, j.AppName, j.RemoteHost, j.RemoteCertPath)
+		if err := deliverRemoteFile(j); err != nil {
+			return err
+		}
+	case "windows_cert_store":
+		log.Printf("[app-connector] job %s (%s): cert_ready — windows_cert_store delivery to %s",
+			j.ID, j.AppName, j.RemoteHost)
+		thumbprint, err := deliverWindowsCertStore(j)
+		if err != nil {
+			return err
+		}
+		if thumbprint != "" {
+			log.Printf("[app-connector] job %s (%s): thumbprint: %s", j.ID, j.AppName, thumbprint)
+		}
+	default:
+		// local_file (default)
+		if err := w.deliverLocalFile(ctx, j); err != nil {
+			return err
+		}
+	}
+
+	if err := w.client.MarkAppJobDone(j.ID); err != nil {
+		return fmt.Errorf("mark done: %w", err)
+	}
+	log.Printf("[app-connector] job %s (%s): complete", j.ID, j.AppName)
+	return nil
+}
+
+// deliverLocalFile writes the cert bundle and chain to the local filesystem and
+// runs the reload command. Used for local_file delivery mode.
+func (w *Worker) deliverLocalFile(ctx context.Context, j AppJob) error {
 	log.Printf("[app-connector] job %s (%s): cert_ready — delivering to %s", j.ID, j.AppName, j.CertPath)
 
 	// When the CA generated the private key server-side (ACME flow), the server sends it
-	// back in key_pem. Write it to key_path first — overwriting the locally-generated key —
-	// so the key on disk matches the certificate the CA issued.
+	// back in key_pem. Write it to key_path first so the key matches the issued cert.
 	if j.KeyPEM != "" && j.KeyPath != "" {
 		if err := writeFileAtomic(j.KeyPath, []byte(j.KeyPEM), 0600); err != nil {
 			return fmt.Errorf("write server-provided key to %s: %w", j.KeyPath, err)
@@ -149,7 +188,6 @@ func (w *Worker) deliverAppCert(ctx context.Context, j AppJob) error {
 	}
 
 	// Verify the private key is in place before touching cert files.
-	// If the key is missing (e.g. the host was re-imaged), fail fast with a clear message.
 	if j.KeyPath != "" {
 		if _, err := os.Stat(j.KeyPath); os.IsNotExist(err) {
 			return fmt.Errorf(
@@ -160,7 +198,6 @@ func (w *Worker) deliverAppCert(ctx context.Context, j AppJob) error {
 	}
 
 	// cert_path receives the full PEM bundle (leaf + intermediates + root).
-	// This is what nginx's ssl_certificate and most app TLS configs expect.
 	if j.CertPath != "" {
 		if err := writeFileAtomic(j.CertPath, []byte(j.Certificate), 0644); err != nil {
 			return fmt.Errorf("write cert to %s: %w", j.CertPath, err)
@@ -169,9 +206,8 @@ func (w *Worker) deliverAppCert(ctx context.Context, j AppJob) error {
 	}
 
 	// chain_path (optional) receives only the intermediates + root, stripped of the leaf.
-	// Useful for apps that configure the CA chain separately (e.g. stunnel, some Java keystores).
 	if j.ChainPath != "" {
-		chain := pemChain(j.Certificate) // strips the first block (leaf cert)
+		chain := pemChain(j.Certificate)
 		if chain != "" {
 			if err := writeFileAtomic(j.ChainPath, []byte(chain), 0644); err != nil {
 				return fmt.Errorf("write chain to %s: %w", j.ChainPath, err)
@@ -180,22 +216,13 @@ func (w *Worker) deliverAppCert(ctx context.Context, j AppJob) error {
 		}
 	}
 
-	// Run the reload command (via sh -c so it can contain pipes, &&, etc.)
 	if j.ReloadCmd != "" {
 		log.Printf("[app-connector] job %s: running reload: %s", j.ID, j.ReloadCmd)
 		if out, err := runReloadCmd(j.ReloadCmd); err != nil {
-			// Return full error so it lands in the job's error field and the UI shows it.
 			return fmt.Errorf("reload command %q failed: %w\noutput: %s", j.ReloadCmd, err, strings.TrimSpace(out))
 		}
 		log.Printf("[app-connector] job %s: reload complete", j.ID)
 	}
-
-	if err := w.client.MarkAppJobDone(j.ID); err != nil {
-		// Cert is delivered but server mark failed. Log and return error so the connector
-		// retries on the next poll (cert_ready still set on server).
-		return fmt.Errorf("mark done: %w", err)
-	}
-	log.Printf("[app-connector] job %s (%s): complete — cert delivered and service reloaded", j.ID, j.AppName)
 	return nil
 }
 

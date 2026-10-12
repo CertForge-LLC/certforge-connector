@@ -227,6 +227,16 @@ type AppJob struct {
 	TLSProbeHost      string `json:"tls_probe_host,omitempty"`
 	TLSProbePort      string `json:"tls_probe_port,omitempty"`
 	TLSExpectedSerial string `json:"tls_expected_serial,omitempty"`
+	// Remote delivery fields — populated for remote_file and windows_cert_store modes.
+	DeliveryMode   string `json:"delivery_mode,omitempty"`
+	RemoteHost     string `json:"remote_host,omitempty"`
+	RemotePort     int    `json:"remote_port,omitempty"`
+	RemoteUser     string `json:"remote_user,omitempty"`
+	SSHKey         string `json:"ssh_key,omitempty"`          // decrypted SSH private key PEM
+	RemoteCertPath string `json:"remote_cert_path,omitempty"`
+	RemoteKeyPath  string `json:"remote_key_path,omitempty"`
+	PFXPassword    string `json:"pfx_password,omitempty"`     // decrypted PFX password
+	PSTemplate     string `json:"ps_template,omitempty"`      // rendered PowerShell template (windows_cert_store only)
 }
 
 // ListAppJobs returns all pending and cert_ready app connector jobs assigned to this agent.
